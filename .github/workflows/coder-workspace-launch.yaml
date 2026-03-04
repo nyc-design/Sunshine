@@ -1,0 +1,20 @@
+name: Launch Coder Workspace
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Who is the workspace for?"
+        type: choice
+        options: [self, agent]
+        default: agent
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    uses: nyc-design/Coder-Workspaces/.github/workflows/coder-workspace-launch.yaml@main
+    secrets: inherit
+    with:
+      mode: ${{ inputs.mode }}
