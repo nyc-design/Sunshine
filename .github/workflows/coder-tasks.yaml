@@ -1,0 +1,28 @@
+name: Coder Tasks Automation
+
+on:
+  workflow_dispatch:
+  issues:
+    types: [labeled, closed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  issue-automation:
+    if: github.event_name == 'issues' && github.event.action == 'labeled'
+    uses: nyc-design/Coder-Workspaces/.github/workflows/coder-issue-automation.yaml@main
+    secrets: inherit
+
+  comment-forward:
+    if: github.event_name == 'issue_comment'
+    uses: nyc-design/Coder-Workspaces/.github/workflows/coder-task-comment.yaml@main
+    secrets: inherit
+
+  task-cleanup:
+    if: github.event_name == 'issues' && github.event.action == 'closed'
+    uses: nyc-design/Coder-Workspaces/.github/workflows/coder-task-cleanup.yaml@main
+    secrets: inherit
