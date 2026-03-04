@@ -880,6 +880,9 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_CUDA
       NVFBC,  ///< NvFBC
 #endif
+#ifdef SUNSHINE_BUILD_UVC
+      UVC,  ///< UVC capture card
+#endif
 #ifdef SUNSHINE_BUILD_WAYLAND
       WAYLAND,  ///< Wayland
 #endif
@@ -904,6 +907,15 @@ namespace platf {
 
   bool verify_nvfbc() {
     return !nvfbc_display_names().empty();
+  }
+#endif
+
+#ifdef SUNSHINE_BUILD_UVC
+  std::vector<std::string> uvc_display_names();
+  std::shared_ptr<display_t> uvc_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
+
+  bool verify_uvc() {
+    return !uvc_display_names().empty();
   }
 #endif
 
@@ -950,6 +962,11 @@ namespace platf {
       return nvfbc_display_names();
     }
 #endif
+#ifdef SUNSHINE_BUILD_UVC
+    if (sources[source::UVC]) {
+      return uvc_display_names();
+    }
+#endif
 #ifdef SUNSHINE_BUILD_WAYLAND
     if (sources[source::WAYLAND]) {
       return wl_display_names();
@@ -987,6 +1004,12 @@ namespace platf {
     if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) {
       BOOST_LOG(info) << "Screencasting with NvFBC"sv;
       return nvfbc_display(hwdevice_type, display_name, config);
+    }
+#endif
+#ifdef SUNSHINE_BUILD_UVC
+    if (sources[source::UVC]) {
+      BOOST_LOG(info) << "Screencasting with UVC capture card"sv;
+      return uvc_display(hwdevice_type, display_name, config);
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
@@ -1044,6 +1067,11 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_CUDA
     if (((config::video.capture.empty() && sources.none()) || config::video.capture == "nvfbc") && verify_nvfbc()) {
       sources[source::NVFBC] = true;
+    }
+#endif
+#ifdef SUNSHINE_BUILD_UVC
+    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "uvc") && verify_uvc()) {
+      sources[source::UVC] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND

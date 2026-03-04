@@ -688,6 +688,153 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### controller_transport
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Choose where controller input is delivered.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            host
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            controller_transport = esp32
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="2">Choices</td>
+        <td>host</td>
+        <td>Inject gamepad input on the host using the platform virtual-controller backend.</td>
+    </tr>
+    <tr>
+        <td>esp32</td>
+        <td>Forward gamepad input to an ESP32 over wired serial (JSON line protocol).
+            @note{Applies to Linux only.}</td>
+    </tr>
+</table>
+
+### esp32_serial_port
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Serial device used for ESP32 controller transport.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            /dev/ttyACM0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_serial_port = /dev/ttyUSB0
+            @endcode</td>
+    </tr>
+</table>
+
+### esp32_baud
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Baud rate used for ESP32 serial transport.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            115200
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_baud = 115200
+            @endcode</td>
+    </tr>
+</table>
+
+### esp32_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Controller mode sent to ESP32 at stream start when using @code{}controller_transport = esp32@endcode.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            gamepad
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_mode = switch_controller
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="2">Choices</td>
+        <td>gamepad</td>
+        <td>Use the ESP32 generic gamepad mapping.</td>
+    </tr>
+    <tr>
+        <td>switch_controller</td>
+        <td>Use the ESP32 Nintendo Switch controller mapping.</td>
+    </tr>
+</table>
+
+### esp32_delivery_policy
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Output delivery policy sent to ESP32 at stream start when using @code{}controller_transport = esp32@endcode.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_delivery_policy = wired
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>Use wired output when available, otherwise use Bluetooth.</td>
+    </tr>
+    <tr>
+        <td>wired</td>
+        <td>Force wired USB output mode.</td>
+    </tr>
+    <tr>
+        <td>bluetooth</td>
+        <td>Force Bluetooth output mode.</td>
+    </tr>
+</table>
+
 ### keybindings
 
 <table>
@@ -2055,7 +2202,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="6">Choices</td>
+        <td rowspan="8">Choices</td>
         <td>nvfbc</td>
         <td>Use NVIDIA Frame Buffer Capture to capture direct to GPU memory. This is usually the fastest method for
             NVIDIA cards. NvFBC does not have native Wayland support and does not work with XWayland.
@@ -2073,8 +2220,19 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>
+        <td>uvc</td>
+        <td>Capture from a UVC capture card (for example HDMI/USB capture dongles) via Video4Linux.
+            @note{Applies to Linux only.}</td>
+    </tr>
+    <tr>
         <td>x11</td>
         <td>Uses XCB. This is the slowest and most CPU intensive so should be avoided if possible.
+            @note{Applies to FreeBSD and Linux only.}</td>
+    </tr>
+    <tr>
+        <td>portal</td>
+        <td>Capture through XDG Desktop Portal (PipeWire based). This is useful on sandboxed desktops and for
+            compositors without direct capture integrations.
             @note{Applies to FreeBSD and Linux only.}</td>
     </tr>
     <tr>

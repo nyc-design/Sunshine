@@ -10,6 +10,9 @@
 #include "thread_safe.h"
 #include "video_colorspace.h"
 
+// standard includes
+#include <string>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
@@ -43,6 +46,8 @@ namespace video {
     int chromaSamplingType;  // 0 - 4:2:0, 1 - 4:4:4
 
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
+
+    std::string capture_source;  ///< Optional per-session capture source identifier (e.g. UVC card id).
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

@@ -10,6 +10,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "inputtino_esp32.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -25,6 +26,9 @@ namespace platf {
     std::unique_ptr<joypads_t> joypad;
     gamepad_feedback_msg_t last_rumble;
     gamepad_feedback_msg_t last_rgb_led;
+    gamepad_state_t last_state {};
+    std::string last_hat_direction {"center"};
+    bool has_state {false};
   };
 
   struct input_raw_t {
@@ -41,6 +45,14 @@ namespace platf {
           .product_id = 0xDEAD,
           .version = 0x111,
         })),
+        esp32(config::input.controller_transport == "esp32" ?
+                std::make_unique<esp32::serial_client_t>(
+                  config::input.esp32_serial_port,
+                  config::input.esp32_baud,
+                  config::input.esp32_mode,
+                  config::input.esp32_delivery_policy
+                ) :
+                nullptr),
         gamepads(MAX_GAMEPADS) {
       if (!mouse) {
         BOOST_LOG(warning) << "Unable to create virtual mouse: " << mouse.getErrorMessage();
@@ -55,6 +67,7 @@ namespace platf {
     // All devices are wrapped in Result because it might be that we aren't able to create them (ex: udev permission denied)
     inputtino::Result<inputtino::Mouse> mouse;
     inputtino::Result<inputtino::Keyboard> keyboard;
+    std::unique_ptr<esp32::serial_client_t> esp32;
 
     /**
      * A list of gamepads that are currently connected.

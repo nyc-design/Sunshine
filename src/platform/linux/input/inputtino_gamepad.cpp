@@ -3,6 +3,7 @@
  * @brief Definitions for inputtino gamepad input handling.
  */
 // lib includes
+#include <array>
 #include <boost/locale.hpp>
 #include <inputtino/input.hpp>
 #include <libevdev/libevdev.h>
@@ -18,6 +19,51 @@
 using namespace std::literals;
 
 namespace platf::gamepad {
+  namespace {
+    constexpr std::uint32_t DIGITAL_BUTTON_MASK = START | BACK | LEFT_STICK | RIGHT_STICK | LEFT_BUTTON | RIGHT_BUTTON | HOME | A | B | X | Y;
+
+    struct mapped_button_t {
+      std::uint32_t mask;
+      std::string_view name;
+    };
+
+    constexpr std::array mapped_buttons {
+      mapped_button_t {A, "A"sv},
+      mapped_button_t {B, "B"sv},
+      mapped_button_t {X, "X"sv},
+      mapped_button_t {Y, "Y"sv},
+      mapped_button_t {LEFT_BUTTON, "LB"sv},
+      mapped_button_t {RIGHT_BUTTON, "RB"sv},
+      mapped_button_t {START, "start"sv},
+      mapped_button_t {BACK, "select"sv},
+      mapped_button_t {LEFT_STICK, "lstick"sv},
+      mapped_button_t {RIGHT_STICK, "rstick"sv},
+      mapped_button_t {HOME, "home"sv},
+    };
+
+    void release_all_esp32_buttons(input_raw_t *raw, const joypad_state &state) {
+      if (!raw || !raw->esp32 || !state.has_state) {
+        return;
+      }
+
+      for (const auto &[mask, name] : mapped_buttons) {
+        if (state.last_state.buttonFlags & mask) {
+          raw->esp32->send_button(name, false);
+        }
+      }
+
+      if (esp32::trigger_pressed(state.last_state.lt)) {
+        raw->esp32->send_button("LT", false);
+      }
+      if (esp32::trigger_pressed(state.last_state.rt)) {
+        raw->esp32->send_button("RT", false);
+      }
+
+      raw->esp32->send_hat("center");
+      raw->esp32->send_stick("left", 0, 0);
+      raw->esp32->send_stick("right", 0, 0);
+    }
+  }  // namespace
 
   enum GamepadStatus {
     UHID_NOT_AVAILABLE = 0,  ///< UHID is not available
@@ -54,6 +100,19 @@ namespace platf::gamepad {
   }
 
   int alloc(input_raw_t *raw, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        BOOST_LOG(error) << "ESP32 controller transport selected but serial client is unavailable";
+        return -1;
+      }
+
+      auto state = std::make_shared<joypad_state>(joypad_state {});
+      raw->gamepads[id.globalIndex] = std::move(state);
+      raw->esp32->send_mode_init();
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " routed to ESP32 serial transport";
+      return 0;
+    }
+
     ControllerType selectedGamepadType;
 
     if (config::input.gamepad == "xone"sv) {
@@ -180,6 +239,14 @@ namespace platf::gamepad {
   }
 
   void free(input_raw_t *raw, int nr) {
+    if (config::input.controller_transport == "esp32"sv) {
+      if (raw->gamepads[nr]) {
+        release_all_esp32_buttons(raw, *raw->gamepads[nr]);
+      }
+      raw->gamepads[nr].reset();
+      return;
+    }
+
     // This will call the destructor which in turn will stop the background threads for rumble and LED (and ultimately remove the joypad device)
     raw->gamepads[nr]->joypad.reset();
     raw->gamepads[nr].reset();
@@ -188,6 +255,54 @@ namespace platf::gamepad {
   void update(input_raw_t *raw, int nr, const gamepad_state_t &gamepad_state) {
     auto gamepad = raw->gamepads[nr];
     if (!gamepad) {
+      return;
+    }
+
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        return;
+      }
+
+      const auto previous_state = gamepad->last_state;
+      const auto previous_hat = gamepad->last_hat_direction;
+
+      const auto changed_mask = (previous_state.buttonFlags ^ gamepad_state.buttonFlags) & DIGITAL_BUTTON_MASK;
+      for (const auto &[mask, name] : mapped_buttons) {
+        if (!(changed_mask & mask)) {
+          continue;
+        }
+
+        const bool pressed = gamepad_state.buttonFlags & mask;
+        raw->esp32->send_button(name, pressed);
+      }
+
+      const bool previous_lt = esp32::trigger_pressed(previous_state.lt);
+      const bool current_lt = esp32::trigger_pressed(gamepad_state.lt);
+      if (previous_lt != current_lt) {
+        raw->esp32->send_button("LT", current_lt);
+      }
+
+      const bool previous_rt = esp32::trigger_pressed(previous_state.rt);
+      const bool current_rt = esp32::trigger_pressed(gamepad_state.rt);
+      if (previous_rt != current_rt) {
+        raw->esp32->send_button("RT", current_rt);
+      }
+
+      const auto current_hat = esp32::dpad_direction(gamepad_state.buttonFlags);
+      if (!gamepad->has_state || current_hat != previous_hat) {
+        raw->esp32->send_hat(current_hat);
+        gamepad->last_hat_direction = current_hat;
+      }
+
+      if (!gamepad->has_state || previous_state.lsX != gamepad_state.lsX || previous_state.lsY != gamepad_state.lsY) {
+        raw->esp32->send_stick("left", gamepad_state.lsX, gamepad_state.lsY);
+      }
+      if (!gamepad->has_state || previous_state.rsX != gamepad_state.rsX || previous_state.rsY != gamepad_state.rsY) {
+        raw->esp32->send_stick("right", gamepad_state.rsX, gamepad_state.rsY);
+      }
+
+      gamepad->last_state = gamepad_state;
+      gamepad->has_state = true;
       return;
     }
 

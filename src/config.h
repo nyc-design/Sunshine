@@ -198,6 +198,11 @@ namespace config {
     bool keyboard;
     bool mouse;
     bool controller;
+    std::string controller_transport;
+    std::string esp32_serial_port;
+    int esp32_baud;
+    std::string esp32_mode;
+    std::string esp32_delivery_policy;
 
     bool always_send_scancodes;
 

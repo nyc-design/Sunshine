@@ -262,6 +262,8 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/graphics.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/uvcgrab.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/uvcgrab.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/glad/src/egl.c"
         "${CMAKE_SOURCE_DIR}/third-party/glad/src/gl.c"
@@ -269,6 +271,8 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/third-party/glad/include/KHR/khrplatform.h"
         "${CMAKE_SOURCE_DIR}/third-party/glad/include/glad/gl.h"
         "${CMAKE_SOURCE_DIR}/third-party/glad/include/glad/egl.h")
+
+add_compile_definitions(SUNSHINE_BUILD_UVC)
 
 list(APPEND PLATFORM_LIBRARIES
         dl

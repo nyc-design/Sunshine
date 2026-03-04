@@ -1124,12 +1124,15 @@ namespace video {
    * @brief Update the list of display names before or during a stream.
    * @details This will attempt to keep `current_display_index` pointing at the same display.
    * @param dev_type The encoder device type used for display lookup.
+   * @param preferred_display_name Preferred capture source name for this session, if any.
    * @param display_names The list of display names to repopulate.
    * @param current_display_index The current display index or -1 if not yet known.
    */
-  void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
-    // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+  void refresh_displays(platf::mem_type_e dev_type, const std::string &preferred_display_name, std::vector<std::string> &display_names, int &current_display_index) {
+    // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa.
+    const auto output_name = preferred_display_name.empty() ?
+                               display_device::map_output_name(config::video.output_name) :
+                               preferred_display_name;
     std::string current_display_name;
 
     // If we have a current display index, let's start with that
@@ -1207,7 +1210,7 @@ namespace video {
     // get the most up-to-date list available monitors
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+    refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config.capture_source, display_names, display_p);
     auto disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
     if (!disp) {
       return;
@@ -1397,7 +1400,7 @@ namespace video {
               disp.reset();
 
               // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+              refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config.capture_source, display_names, display_p);
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -2209,7 +2212,7 @@ namespace video {
 
     while (encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+      refresh_displays(encoder.platform_formats->dev_type, synced_session_ctxs.front()->config.capture_source, display_names, display_p);
 
       // Process any pending display switch with the new list of displays
       if (switch_display_event->peek()) {
