@@ -559,7 +559,11 @@ namespace config {
     true,  // mouse enabled
     true,  // controller enabled
     "host",  // controller transport
+#ifdef _WIN32
+    "COM3",  // esp32_serial_port
+#else
     "/dev/ttyACM0",  // esp32_serial_port
+#endif
     115200,  // esp32_baud
     "gamepad",  // esp32_mode
     "auto",  // esp32_delivery_policy

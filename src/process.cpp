@@ -36,6 +36,9 @@
 #if (defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)
   #include "platform/linux/uvcgrab.h"
 #endif
+#if defined(_WIN32) && defined(SUNSHINE_BUILD_UVC)
+  #include "platform/windows/uvc_capture.h"
+#endif
 
 #ifdef _WIN32
   // from_utf8() string conversion function
@@ -635,7 +638,7 @@ namespace proc {
     return std::make_tuple(id_no_index, id_with_index);
   }
 
-#if (defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)
+#if ((defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)) || (defined(_WIN32) && defined(SUNSHINE_BUILD_UVC))
   void append_uvc_apps(std::set<std::string> &ids, std::vector<proc::ctx_t> &apps) {
     for (const auto &device : platf::uvc::enumerate_devices()) {
       proc::ctx_t ctx;
@@ -784,7 +787,7 @@ namespace proc {
         apps.emplace_back(std::move(ctx));
       }
 
-#if (defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)
+#if ((defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)) || (defined(_WIN32) && defined(SUNSHINE_BUILD_UVC))
       append_uvc_apps(ids, apps);
 #endif
 

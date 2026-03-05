@@ -3,9 +3,11 @@
  * @brief Definitions for video.
  */
 // standard includes
+#include <algorithm>
 #include <atomic>
 #include <bitset>
 #include <list>
+#include <string>
 #include <thread>
 
 // lib includes
@@ -31,6 +33,7 @@ extern "C" {
 #include "video.h"
 
 #ifdef _WIN32
+#include <d3d11.h>
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -2727,6 +2730,26 @@ namespace video {
     }
 
     auto encoder_list = encoders;
+    std::string requested_encoder = config::video.encoder;
+
+#ifdef _WIN32
+    const bool uvc_capture_mode = config::video.capture == "uvc";
+    if (uvc_capture_mode) {
+      // The Windows custom NVENC path expects desktop duplication capture textures.
+      // UVC capture currently routes through avcodec/software conversion paths.
+      encoder_list.erase(
+        std::remove_if(encoder_list.begin(), encoder_list.end(), [](auto *encoder) {
+          return encoder->name == "nvenc"sv;
+        }),
+        encoder_list.end()
+      );
+
+      if (requested_encoder == "nvenc"sv) {
+        BOOST_LOG(warning) << "Ignoring configured encoder [nvenc] because capture=uvc on Windows currently supports avcodec/software paths only"sv;
+        requested_encoder.clear();
+      }
+    }
+#endif
 
     // If we already have a good encoder, check to see if another probe is required
     if (chosen_encoder && !(chosen_encoder->flags & ALWAYS_REPROBE) && !platf::needs_encoder_reenumeration()) {
@@ -2759,12 +2782,12 @@ namespace video {
       }
     };
 
-    if (!config::video.encoder.empty()) {
+    if (!requested_encoder.empty()) {
       // If there is a specific encoder specified, use it if it passes validation
       KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
         auto encoder = *pos;
 
-        if (encoder->name == config::video.encoder) {
+        if (encoder->name == requested_encoder) {
           // Remove the encoder from the list entirely if it fails validation
           if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
             pos = encoder_list.erase(pos);
@@ -2782,7 +2805,7 @@ namespace video {
       });
 
       if (chosen_encoder == nullptr) {
-        BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
+        BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << requested_encoder << ']';
       }
     }
 
@@ -2977,8 +3000,40 @@ namespace video {
     std::fill_n((std::uint8_t *) ctx, sizeof(AVD3D11VADeviceContext), 0);
 
     auto device = (ID3D11Device *) encode_device->data;
+    bool created_device = false;
+    if (!device) {
+      D3D_FEATURE_LEVEL feature_level {};
+      const D3D_FEATURE_LEVEL feature_levels[] {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+      };
 
-    device->AddRef();
+      const auto status = D3D11CreateDevice(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        0,
+        feature_levels,
+        ARRAYSIZE(feature_levels),
+        D3D11_SDK_VERSION,
+        &device,
+        &feature_level,
+        nullptr
+      );
+
+      if (FAILED(status) || !device) {
+        BOOST_LOG(error) << "Failed to create D3D11 device for hardware encoding input [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      created_device = true;
+    }
+
+    if (!created_device) {
+      device->AddRef();
+    }
     ctx->device = device;
 
     ctx->lock_ctx = (void *) 1;

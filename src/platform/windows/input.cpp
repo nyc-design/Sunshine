@@ -8,6 +8,7 @@
 #include <Windows.h>
 
 // standard includes
+#include <array>
 #include <cmath>
 #include <thread>
 #include <vector>
@@ -16,6 +17,7 @@
 #include <ViGEm/Client.h>
 
 // local includes
+#include "input_esp32.h"
 #include "keylayout.h"
 #include "misc.h"
 #include "src/config.h"
@@ -84,6 +86,13 @@ namespace platf {
     gamepad_feedback_msg_t last_rgb_led;
   };
 
+  struct esp32_gamepad_state_t {
+    bool active {false};
+    bool has_state {false};
+    gamepad_state_t last_state {};
+    std::string last_hat_direction {"center"};
+  };
+
   constexpr float EARTH_G = 9.80665f;
 
 #define MPS2_TO_DS4_ACCEL(x) (int32_t) (((x) / EARTH_G) * 8192)
@@ -124,6 +133,50 @@ namespace platf {
       .sCurrentTouch = ds4_touch_unused,
       .sPreviousTouch = {ds4_touch_unused, ds4_touch_unused}}}
   };
+
+  constexpr std::uint32_t ESP32_DIGITAL_BUTTON_MASK = START | BACK | LEFT_STICK | RIGHT_STICK | LEFT_BUTTON | RIGHT_BUTTON | HOME | A | B | X | Y;
+
+  struct esp32_mapped_button_t {
+    std::uint32_t mask;
+    std::string_view name;
+  };
+
+  constexpr std::array ESP32_MAPPED_BUTTONS {
+    esp32_mapped_button_t {A, "A"sv},
+    esp32_mapped_button_t {B, "B"sv},
+    esp32_mapped_button_t {X, "X"sv},
+    esp32_mapped_button_t {Y, "Y"sv},
+    esp32_mapped_button_t {LEFT_BUTTON, "LB"sv},
+    esp32_mapped_button_t {RIGHT_BUTTON, "RB"sv},
+    esp32_mapped_button_t {START, "start"sv},
+    esp32_mapped_button_t {BACK, "select"sv},
+    esp32_mapped_button_t {LEFT_STICK, "lstick"sv},
+    esp32_mapped_button_t {RIGHT_STICK, "rstick"sv},
+    esp32_mapped_button_t {HOME, "home"sv},
+  };
+
+  void release_all_esp32_buttons(esp32::serial_client_t &serial, const esp32_gamepad_state_t &state) {
+    if (!state.has_state) {
+      return;
+    }
+
+    for (const auto &[mask, name] : ESP32_MAPPED_BUTTONS) {
+      if (state.last_state.buttonFlags & mask) {
+        serial.send_button(name, false);
+      }
+    }
+
+    if (esp32::trigger_pressed(state.last_state.lt)) {
+      serial.send_button("LT", false);
+    }
+    if (esp32::trigger_pressed(state.last_state.rt)) {
+      serial.send_button("RT", false);
+    }
+
+    serial.send_hat("center");
+    serial.send_stick("left", 0, 0);
+    serial.send_stick("right", 0, 0);
+  }
 
   /**
    * @brief Updates the DS4 input report with the provided motion data.
@@ -436,6 +489,8 @@ namespace platf {
       delete vigem;
     }
 
+    std::unique_ptr<esp32::serial_client_t> esp32;
+    std::array<esp32_gamepad_state_t, MAX_GAMEPADS> esp32_gamepads;
     vigem_t *vigem;
 
     decltype(CreateSyntheticPointerDevice) *fnCreateSyntheticPointerDevice;
@@ -447,10 +502,20 @@ namespace platf {
     input_t result {new input_raw_t {}};
     auto &raw = *(input_raw_t *) result.get();
 
-    raw.vigem = new vigem_t {};
-    if (raw.vigem->init()) {
-      delete raw.vigem;
+    if (config::input.controller_transport == "esp32"sv) {
       raw.vigem = nullptr;
+      raw.esp32 = std::make_unique<esp32::serial_client_t>(
+        config::input.esp32_serial_port,
+        config::input.esp32_baud,
+        config::input.esp32_mode,
+        config::input.esp32_delivery_policy
+      );
+    } else {
+      raw.vigem = new vigem_t {};
+      if (raw.vigem->init()) {
+        delete raw.vigem;
+        raw.vigem = nullptr;
+      }
     }
 
     // Get pointers to virtual touch/pen input functions (Win10 1809+)
@@ -1166,6 +1231,21 @@ namespace platf {
   int alloc_gamepad(input_t &input, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {
     auto raw = (input_raw_t *) input.get();
 
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        BOOST_LOG(error) << "ESP32 controller transport selected but serial client is unavailable";
+        return -1;
+      }
+
+      auto &state = raw->esp32_gamepads[id.globalIndex];
+      state = esp32_gamepad_state_t {};
+      state.active = true;
+      raw->esp32->send_mode_init();
+
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " routed to ESP32 serial transport";
+      return 0;
+    }
+
     if (!raw->vigem) {
       return 0;
     }
@@ -1219,6 +1299,15 @@ namespace platf {
 
   void free_gamepad(input_t &input, int nr) {
     auto raw = (input_raw_t *) input.get();
+
+    if (config::input.controller_transport == "esp32"sv) {
+      auto &state = raw->esp32_gamepads[nr];
+      if (raw->esp32 && state.active) {
+        release_all_esp32_buttons(*raw->esp32, state);
+      }
+      state = esp32_gamepad_state_t {};
+      return;
+    }
 
     if (!raw->vigem) {
       return;
@@ -1478,7 +1567,62 @@ namespace platf {
    * @param gamepad_state The gamepad button/axis state sent from the client.
    */
   void gamepad_update(input_t &input, int nr, const gamepad_state_t &gamepad_state) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        return;
+      }
+
+      auto &state = raw->esp32_gamepads[nr];
+      if (!state.active) {
+        return;
+      }
+
+      const auto previous_state = state.last_state;
+      const auto previous_hat = state.last_hat_direction;
+
+      const auto changed_mask = (previous_state.buttonFlags ^ gamepad_state.buttonFlags) & ESP32_DIGITAL_BUTTON_MASK;
+      for (const auto &[mask, name] : ESP32_MAPPED_BUTTONS) {
+        if (!(changed_mask & mask)) {
+          continue;
+        }
+
+        const bool pressed = gamepad_state.buttonFlags & mask;
+        raw->esp32->send_button(name, pressed);
+      }
+
+      const bool previous_lt = esp32::trigger_pressed(previous_state.lt);
+      const bool current_lt = esp32::trigger_pressed(gamepad_state.lt);
+      if (previous_lt != current_lt) {
+        raw->esp32->send_button("LT", current_lt);
+      }
+
+      const bool previous_rt = esp32::trigger_pressed(previous_state.rt);
+      const bool current_rt = esp32::trigger_pressed(gamepad_state.rt);
+      if (previous_rt != current_rt) {
+        raw->esp32->send_button("RT", current_rt);
+      }
+
+      const auto current_hat = esp32::dpad_direction(gamepad_state.buttonFlags);
+      if (!state.has_state || current_hat != previous_hat) {
+        raw->esp32->send_hat(current_hat);
+        state.last_hat_direction = current_hat;
+      }
+
+      if (!state.has_state || previous_state.lsX != gamepad_state.lsX || previous_state.lsY != gamepad_state.lsY) {
+        raw->esp32->send_stick("left", gamepad_state.lsX, gamepad_state.lsY);
+      }
+      if (!state.has_state || previous_state.rsX != gamepad_state.rsX || previous_state.rsY != gamepad_state.rsY) {
+        raw->esp32->send_stick("right", gamepad_state.rsX, gamepad_state.rsY);
+      }
+
+      state.last_state = gamepad_state;
+      state.has_state = true;
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1720,15 +1864,15 @@ namespace platf {
     if (!input) {
       static std::vector gps {
         supported_gamepad_t {"auto", true, ""},
-        supported_gamepad_t {"x360", false, ""},
-        supported_gamepad_t {"ds4", false, ""},
+        supported_gamepad_t {"x360", true, ""},
+        supported_gamepad_t {"ds4", true, ""},
       };
 
       return gps;
     }
 
     auto vigem = ((input_raw_t *) input)->vigem;
-    auto enabled = vigem != nullptr;
+    auto enabled = (vigem != nullptr) || (config::input.controller_transport == "esp32"sv);
     auto reason = enabled ? "" : "gamepads.vigem-not-available";
 
     // ds4 == ps4
@@ -1754,8 +1898,9 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
-    // We support controller touchpad input as long as we're not emulating X360
-    if (config::input.gamepad != "x360"sv) {
+    // We support controller touchpad input as long as we're not emulating X360,
+    // and only when controller events are injected on the host.
+    if (config::input.controller_transport == "host"sv && config::input.gamepad != "x360"sv) {
       caps |= platform_caps::controller_touch;
     }
 

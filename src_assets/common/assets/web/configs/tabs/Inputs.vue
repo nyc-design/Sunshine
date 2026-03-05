@@ -49,7 +49,7 @@ const config = ref(props.config)
     </div>
 
     <!-- Controller transport -->
-    <div class="mb-3" v-if="config.controller === 'enabled' && platform === 'linux'">
+    <div class="mb-3" v-if="config.controller === 'enabled' && (platform === 'linux' || platform === 'windows')">
       <label for="controller_transport" class="form-label">{{ $t('config.controller_transport') }}</label>
       <select id="controller_transport" class="form-select" v-model="config.controller_transport">
         <option value="host">{{ $t('config.controller_transport_host') }}</option>
@@ -59,13 +59,13 @@ const config = ref(props.config)
     </div>
 
     <!-- ESP32 serial transport options -->
-    <template v-if="config.controller === 'enabled' && platform === 'linux' && config.controller_transport === 'esp32'">
+    <template v-if="config.controller === 'enabled' && (platform === 'linux' || platform === 'windows') && config.controller_transport === 'esp32'">
       <div class="mb-3">
         <label for="esp32_serial_port" class="form-label">{{ $t('config.esp32_serial_port') }}</label>
         <input id="esp32_serial_port"
                type="text"
                class="form-control"
-               placeholder="/dev/ttyACM0"
+               placeholder="COM3 or /dev/ttyACM0"
                v-model="config.esp32_serial_port" />
         <div class="form-text">{{ $t('config.esp32_serial_port_desc') }}</div>
       </div>

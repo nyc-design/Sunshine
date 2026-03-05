@@ -717,7 +717,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>esp32</td>
         <td>Forward gamepad input to an ESP32 over wired serial (JSON line protocol).
-            @note{Applies to Linux only.}</td>
+            @note{Applies to Linux and Windows.}</td>
     </tr>
 </table>
 
@@ -733,13 +733,14 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            /dev/ttyACM0
+            Linux: /dev/ttyACM0
+            Windows: COM3
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            esp32_serial_port = /dev/ttyUSB0
+            esp32_serial_port = COM4
             @endcode</td>
     </tr>
 </table>
@@ -2221,8 +2222,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>uvc</td>
-        <td>Capture from a UVC capture card (for example HDMI/USB capture dongles) via Video4Linux.
-            @note{Applies to Linux only.}</td>
+        <td>Capture from a UVC capture card (for example HDMI/USB capture dongles) as the video source.
+            @note{Applies to Linux and Windows.}</td>
     </tr>
     <tr>
         <td>x11</td>

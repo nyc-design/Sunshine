@@ -80,6 +80,7 @@ const config = ref(props.config)
           <template #windows>
             <option value="ddx">Desktop Duplication API</option>
             <option value="wgc">Windows.Graphics.Capture {{ $t('_common.beta') }}</option>
+            <option value="uvc">{{ $t('config.capture_uvc') }}</option>
           </template>
         </PlatformLayout>
       </select>

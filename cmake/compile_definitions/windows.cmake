@@ -26,6 +26,7 @@ link_directories(${CURL_STATIC_LIBRARY_DIRS})
 
 # miniupnpc
 add_definitions(-DMINIUPNP_STATICLIB)
+add_compile_definitions(SUNSHINE_BUILD_UVC)
 
 # extra tools/binaries for audio/display devices
 add_subdirectory(tools)  # todo - this is temporary, only tools for Windows are needed, for now
@@ -65,11 +66,15 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/input_esp32.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/input_esp32.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_ram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/uvc_capture.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/uvc_capture.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
@@ -93,11 +98,15 @@ list(PREPEND PLATFORM_LIBRARIES
         dxgi
         iphlpapi
         ksuser
+        mfplat
+        mfreadwrite
+        mfuuid
         libssp.a
         libstdc++.a
         libwinpthread.a
         minhook::minhook
         ntdll
+        ole32
         setupapi
         shlwapi
         synchronization.lib
