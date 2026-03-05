@@ -33,6 +33,7 @@
 #include "utf_utils.h"
 #include "src/logging.h"
 #include "src/utility.h"
+#include "src/video.h"
 
 using namespace std::literals;
 
