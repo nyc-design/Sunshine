@@ -98,6 +98,7 @@ list(PREPEND PLATFORM_LIBRARIES
         dxgi
         iphlpapi
         ksuser
+        mf
         mfplat
         mfreadwrite
         mfuuid
