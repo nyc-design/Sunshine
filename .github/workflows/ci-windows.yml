@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       build_profile:
-        description: Build profile (fast = AMD64 portable zip only, full = AMD64+ARM64 installers+zip).
+        description: Build profile (fast = AMD64 NSIS installer + zip, full = AMD64+ARM64 NSIS+MSI+zip).
         required: true
         type: choice
         default: fast
@@ -97,11 +97,9 @@ jobs:
           if [[ "${MATRIX_MSYSTEM}" == "ucrt64" ]]; then
             dependencies+=(
               "mingw-w64-${TOOLCHAIN}-MinHook"
+              "mingw-w64-${TOOLCHAIN}-nsis"
               "mingw-w64-${TOOLCHAIN}-nodejs"
             )
-            if [[ "${BUILD_PROFILE}" == "full" ]]; then
-              dependencies+=("mingw-w64-${TOOLCHAIN}-nsis")
-            fi
           fi
 
           # do not modify below this line
@@ -265,11 +263,13 @@ jobs:
           mkdir -p artifacts
           cd build
 
-          # package full profile installers
+          # package nsis installer (all profiles)
+          cpack -G NSIS
+          mv ./cpack_artifacts/Sunshine.exe ../artifacts/Sunshine-${{ matrix.name }}-installer.exe
+
+          # package full profile msi
           if [[ "${BUILD_PROFILE}" == "full" ]]; then
-            cpack -G NSIS
             cpack -G WIX
-            mv ./cpack_artifacts/Sunshine.exe ../artifacts/Sunshine-${{ matrix.name }}-installer.exe
             mv ./cpack_artifacts/Sunshine.msi ../artifacts/Sunshine-${{ matrix.name }}-installer.msi
           fi
 
@@ -285,7 +285,7 @@ jobs:
             | grep -E '(^|/)libopus-0\.dll$|(^|/)opus\.dll$'
 
       - name: Debug nsis
-        if: ${{ always() && (inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full') }}
+        if: always()
         shell: msys2 {0}
         run: cat ./build/cpack_artifacts/_CPack_Packages/win64/NSIS/NSISOutput.log || true
 
