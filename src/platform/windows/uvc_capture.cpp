@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -178,23 +179,17 @@ namespace platf {
       std::vector<std::uint8_t> backing;
     };
 
-    std::uint8_t clamp_u8(int value) {
-      return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
-    }
-
-    void yuv_to_bgr0(int y, int u, int v, std::uint8_t *dst) {
-      const int c = y - 16;
-      const int d = u - 128;
-      const int e = v - 128;
-
-      const int r = (298 * c + 409 * e + 128) >> 8;
-      const int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-      const int b = (298 * c + 516 * d + 128) >> 8;
-
-      dst[0] = clamp_u8(b);
-      dst[1] = clamp_u8(g);
-      dst[2] = clamp_u8(r);
-      dst[3] = 0;
+    const char *subtype_name(const GUID &subtype) {
+      if (subtype == MFVideoFormat_RGB32) {
+        return "RGB32";
+      }
+      if (subtype == MFVideoFormat_YUY2) {
+        return "YUY2";
+      }
+      if (subtype == MFVideoFormat_NV12) {
+        return "NV12";
+      }
+      return "unknown";
     }
 
     class uvc_display_t: public display_t {
@@ -269,7 +264,7 @@ namespace platf {
 
         const auto requested_fps = std::max(1, config.framerate);
         const auto nominal_frame = std::chrono::milliseconds {std::max(1, 1000 / requested_fps)};
-        read_timeout_ = std::clamp(nominal_frame * 4, 50ms, 1000ms);
+        read_timeout_ = std::clamp(nominal_frame * 6, 100ms, 2000ms);
 
         BOOST_LOG(info) << "UVC: capturing from "sv << source_name_ << " ["sv << source_id_ << "] "sv << width << 'x' << height;
         return 0;
@@ -405,15 +400,82 @@ namespace platf {
           return -1;
         }
 
+        UINT32 raw_stride = 0;
+        int default_stride = 0;
+        if (SUCCEEDED(current_type->GetUINT32(MF_MT_DEFAULT_STRIDE, &raw_stride))) {
+          default_stride = static_cast<int>(raw_stride);
+        }
+
         if (subtype_ == MFVideoFormat_RGB32) {
-          bytes_per_line_ = static_cast<std::uint32_t>(width) * 4;
+          if (default_stride == 0) {
+            default_stride = width * 4;
+          }
+          sws_.reset();
         } else if (subtype_ == MFVideoFormat_YUY2) {
-          bytes_per_line_ = static_cast<std::uint32_t>(width) * 2;
+          if (default_stride == 0) {
+            default_stride = width * 2;
+          }
+          video::sws_t next_sws {sws_getContext(
+            width,
+            height,
+            AV_PIX_FMT_YUYV422,
+            width,
+            height,
+            AV_PIX_FMT_BGR0,
+            SWS_FAST_BILINEAR,
+            nullptr,
+            nullptr,
+            nullptr
+          )};
+          if (!next_sws) {
+            BOOST_LOG(error) << "UVC: failed to initialize YUY2 conversion context"sv;
+            return -1;
+          }
+          sws_ = std::move(next_sws);
         } else if (subtype_ == MFVideoFormat_NV12) {
-          bytes_per_line_ = static_cast<std::uint32_t>(width);
+          if (default_stride == 0) {
+            default_stride = width;
+          }
+          video::sws_t next_sws {sws_getContext(
+            width,
+            height,
+            AV_PIX_FMT_NV12,
+            width,
+            height,
+            AV_PIX_FMT_BGR0,
+            SWS_FAST_BILINEAR,
+            nullptr,
+            nullptr,
+            nullptr
+          )};
+          if (!next_sws) {
+            BOOST_LOG(error) << "UVC: failed to initialize NV12 conversion context"sv;
+            return -1;
+          }
+          sws_ = std::move(next_sws);
         } else {
           BOOST_LOG(error) << "UVC: unsupported media subtype"sv;
           return -1;
+        }
+
+        bytes_per_line_ = static_cast<std::uint32_t>(std::abs(default_stride));
+
+        UINT32 frame_rate_num = 0;
+        UINT32 frame_rate_den = 0;
+        if (SUCCEEDED(MFGetAttributeRatio(current_type.get(), MF_MT_FRAME_RATE, &frame_rate_num, &frame_rate_den)) &&
+            frame_rate_num > 0 && frame_rate_den > 0) {
+          const auto fps = static_cast<double>(frame_rate_num) / static_cast<double>(frame_rate_den);
+          if (fps > 0.0) {
+            read_timeout_ = std::clamp(
+              std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double> {6.0 / fps}),
+              100ms,
+              2000ms
+            );
+            BOOST_LOG(info) << "UVC: negotiated format "sv << subtype_name(subtype_) << ' ' << width << 'x' << height << '@'
+                            << fps << "fps";
+          }
+        } else {
+          BOOST_LOG(info) << "UVC: negotiated format "sv << subtype_name(subtype_) << ' ' << width << 'x' << height;
         }
 
         return 0;
@@ -511,55 +573,51 @@ namespace platf {
         }
 
         if (subtype_ == MFVideoFormat_YUY2) {
-          const auto src_stride = static_cast<std::size_t>(bytes_per_line_);
-          for (int y = 0; y < height; ++y) {
-            const auto src_off = static_cast<std::size_t>(y) * src_stride;
-            const auto dst_off = static_cast<std::size_t>(y) * dst_stride;
-            if (src_off + src_stride > current_len) {
-              return -1;
-            }
+          if (!sws_) {
+            return -1;
+          }
 
-            const auto *line = data + src_off;
-            auto *out = dst + dst_off;
-            for (int x = 0; x < width; x += 2) {
-              const auto px_off = static_cast<std::size_t>(x) * 2;
-              const int y0 = line[px_off + 0];
-              const int u = line[px_off + 1];
-              const int y1 = line[px_off + 2];
-              const int v = line[px_off + 3];
+          const auto src_stride = static_cast<int>(bytes_per_line_);
+          const auto frame_bytes = static_cast<std::size_t>(src_stride) * static_cast<std::size_t>(height);
+          if (frame_bytes > current_len) {
+            return -1;
+          }
 
-              yuv_to_bgr0(y0, u, v, out + static_cast<std::size_t>(x) * 4);
-              if (x + 1 < width) {
-                yuv_to_bgr0(y1, u, v, out + static_cast<std::size_t>(x + 1) * 4);
-              }
-            }
+          std::array<std::uint8_t *, 4> src_data {data, nullptr, nullptr, nullptr};
+          std::array<int, 4> src_linesize {src_stride, 0, 0, 0};
+          std::array<std::uint8_t *, 4> dst_data {dst, nullptr, nullptr, nullptr};
+          std::array<int, 4> dst_linesize {img->row_pitch, 0, 0, 0};
+
+          if (sws_scale(sws_.get(), src_data.data(), src_linesize.data(), 0, height, dst_data.data(), dst_linesize.data()) != height) {
+            return -1;
           }
           return 0;
         }
 
         if (subtype_ == MFVideoFormat_NV12) {
-          const auto y_stride = static_cast<std::size_t>(bytes_per_line_);
-          const auto uv_stride = static_cast<std::size_t>(bytes_per_line_);
-          const auto y_plane_size = y_stride * static_cast<std::size_t>(height);
-          if (current_len < y_plane_size) {
+          if (!sws_) {
             return -1;
           }
 
-          const auto *y_plane = data;
-          const auto *uv_plane = data + y_plane_size;
+          const auto src_stride = static_cast<int>(bytes_per_line_);
+          const auto y_plane_size = static_cast<std::size_t>(src_stride) * static_cast<std::size_t>(height);
+          const auto uv_plane_size = static_cast<std::size_t>(src_stride) * static_cast<std::size_t>((height + 1) / 2);
+          if (current_len < y_plane_size + uv_plane_size) {
+            return -1;
+          }
 
-          for (int y = 0; y < height; ++y) {
-            auto *out = dst + static_cast<std::size_t>(y) * dst_stride;
-            const auto y_row_off = static_cast<std::size_t>(y) * y_stride;
-            const auto uv_row_off = static_cast<std::size_t>(y / 2) * uv_stride;
+          std::array<std::uint8_t *, 4> src_data {
+            data,
+            data + y_plane_size,
+            nullptr,
+            nullptr,
+          };
+          std::array<int, 4> src_linesize {src_stride, src_stride, 0, 0};
+          std::array<std::uint8_t *, 4> dst_data {dst, nullptr, nullptr, nullptr};
+          std::array<int, 4> dst_linesize {img->row_pitch, 0, 0, 0};
 
-            for (int x = 0; x < width; ++x) {
-              const int yy = y_plane[y_row_off + static_cast<std::size_t>(x)];
-              const auto uv_off = uv_row_off + static_cast<std::size_t>(x / 2) * 2;
-              const int u = uv_plane[uv_off + 0];
-              const int v = uv_plane[uv_off + 1];
-              yuv_to_bgr0(yy, u, v, out + static_cast<std::size_t>(x) * 4);
-            }
+          if (sws_scale(sws_.get(), src_data.data(), src_linesize.data(), 0, height, dst_data.data(), dst_linesize.data()) != height) {
+            return -1;
           }
           return 0;
         }
@@ -584,6 +642,7 @@ namespace platf {
       GUID subtype_ {MFVideoFormat_RGB32};
       std::uint32_t bytes_per_line_ {0};
       std::chrono::milliseconds read_timeout_ {250ms};
+      video::sws_t sws_;
     };
 
     const uvc::device_info_t *find_device(std::string_view display_name, const std::vector<uvc::device_info_t> &devices) {
