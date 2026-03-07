@@ -790,21 +790,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="4">Choices</td>
+        <td rowspan="2">Choices</td>
         <td>gamepad</td>
         <td>Use the ESP32 generic gamepad mapping.</td>
     </tr>
     <tr>
         <td>switch_controller</td>
-        <td>Use the ESP32 Nintendo Switch Bluetooth controller mapping.</td>
-    </tr>
-    <tr>
-        <td>wired_switch_pro_controller</td>
-        <td>Use the ESP32 Nintendo Switch wired USB Pro Controller mapping.</td>
-    </tr>
-    <tr>
-        <td>switch_wired</td>
-        <td>Alias of @code{}wired_switch_pro_controller@endcode.</td>
+        <td>Use the ESP32 Nintendo Switch Pro Controller mapping.</td>
     </tr>
 </table>
 

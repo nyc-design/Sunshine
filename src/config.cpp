@@ -1240,7 +1240,7 @@ namespace config {
     string_restricted_f(vars, "controller_transport", input.controller_transport, {"host"sv, "esp32"sv});
     string_f(vars, "esp32_serial_port", input.esp32_serial_port);
     int_between_f(vars, "esp32_baud", input.esp32_baud, {1200, 4000000});
-    string_restricted_f(vars, "esp32_mode", input.esp32_mode, {"gamepad"sv, "switch_controller"sv, "wired_switch_pro_controller"sv, "switch_wired"sv});
+    string_restricted_f(vars, "esp32_mode", input.esp32_mode, {"gamepad"sv, "switch_controller"sv});
     string_restricted_f(vars, "esp32_delivery_policy", input.esp32_delivery_policy, {"auto"sv, "wired"sv, "bluetooth"sv, "websocket"sv, "http"sv});
 
     bool_f(vars, "always_send_scancodes", input.always_send_scancodes);
