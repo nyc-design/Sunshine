@@ -558,6 +558,15 @@ namespace config {
     true,  // keyboard enabled
     true,  // mouse enabled
     true,  // controller enabled
+    "host",  // controller transport
+#ifdef _WIN32
+    "COM3",  // esp32_serial_port
+#else
+    "/dev/ttyACM0",  // esp32_serial_port
+#endif
+    921600,  // esp32_baud
+    "gamepad",  // esp32_mode
+    "auto",  // esp32_delivery_policy
     true,  // always send scancodes
     true,  // high resolution scrolling
     true,  // native pen/touch support
@@ -1228,6 +1237,11 @@ namespace config {
     bool_f(vars, "mouse", input.mouse);
     bool_f(vars, "keyboard", input.keyboard);
     bool_f(vars, "controller", input.controller);
+    string_restricted_f(vars, "controller_transport", input.controller_transport, {"host"sv, "esp32"sv});
+    string_f(vars, "esp32_serial_port", input.esp32_serial_port);
+    int_between_f(vars, "esp32_baud", input.esp32_baud, {1200, 4000000});
+    string_restricted_f(vars, "esp32_mode", input.esp32_mode, {"gamepad"sv, "switch_controller"sv});
+    string_restricted_f(vars, "esp32_delivery_policy", input.esp32_delivery_policy, {"auto"sv, "wired"sv, "bluetooth"sv, "websocket"sv, "http"sv});
 
     bool_f(vars, "always_send_scancodes", input.always_send_scancodes);
 

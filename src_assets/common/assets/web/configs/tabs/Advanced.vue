@@ -73,12 +73,14 @@ const config = ref(props.config)
             <option value="nvfbc">NvFBC</option>
             <option value="wlr">wlroots</option>
             <option value="kms">KMS</option>
+            <option value="uvc">{{ $t('config.capture_uvc') }}</option>
             <option value="x11">X11</option>
             <option value="portal">XDG Portal</option>
           </template>
           <template #windows>
             <option value="ddx">Desktop Duplication API</option>
             <option value="wgc">Windows.Graphics.Capture {{ $t('_common.beta') }}</option>
+            <option value="uvc">{{ $t('config.capture_uvc') }}</option>
           </template>
         </PlatformLayout>
       </select>

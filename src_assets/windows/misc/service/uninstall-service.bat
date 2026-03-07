@@ -32,10 +32,30 @@ if %ERRORLEVEL%==0 (
     echo !CONTENT!> "%SERVICE_CONFIG_FILE%"
 )
 
-rem Stop and delete the legacy SunshineSvc service
-net stop sunshinesvc
-sc delete sunshinesvc
+call :stop_and_delete_service sunshinesvc
+call :stop_and_delete_service SunshineService
+exit /b 0
 
-rem Stop and delete the new SunshineService service
-net stop SunshineService
-sc delete SunshineService
+:stop_and_delete_service
+set "_SVC_NAME=%~1"
+
+sc query "%_SVC_NAME%" >nul 2>&1
+if not %ERRORLEVEL%==0 exit /b 0
+
+sc stop "%_SVC_NAME%" >nul 2>&1
+
+set /a wait_count=0
+:wait_loop
+set /a wait_count+=1
+sc query "%_SVC_NAME%" | findstr /C:"STATE" | findstr /C:"STOPPED" >nul
+if %ERRORLEVEL%==0 goto delete_service
+if %wait_count% GEQ 20 goto force_kill
+ping -n 2 127.0.0.1 >nul
+goto wait_loop
+
+:force_kill
+taskkill /F /FI "SERVICES eq %_SVC_NAME%" >nul 2>&1
+
+:delete_service
+sc delete "%_SVC_NAME%" >nul 2>&1
+exit /b 0

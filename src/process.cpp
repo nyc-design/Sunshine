@@ -5,7 +5,9 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,6 +32,13 @@
 #include "process.h"
 #include "system_tray.h"
 #include "utility.h"
+
+#if (defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)
+  #include "platform/linux/uvcgrab.h"
+#endif
+#if defined(_WIN32) && defined(SUNSHINE_BUILD_UVC)
+  #include "platform/windows/uvc_capture.h"
+#endif
 
 #ifdef _WIN32
   // from_utf8() string conversion function
@@ -163,6 +172,13 @@ namespace proc {
     _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
     _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
     _env["SUNSHINE_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
+    if (_app.capture_source && !_app.capture_source->empty()) {
+      _env["SUNSHINE_CAPTURE_SOURCE"] = *_app.capture_source;
+      launch_session->capture_source = *_app.capture_source;
+    } else {
+      _env.erase("SUNSHINE_CAPTURE_SOURCE");
+      launch_session->capture_source.clear();
+    }
     int channelCount = launch_session->surround_info & 65535;
     switch (channelCount) {
       case 2:
@@ -586,6 +602,11 @@ namespace proc {
     return result.checksum();
   }
 
+  std::string stable_app_id_for_key(const std::string &input) {
+    // Truncate to signed 32-bit range due to client limitations.
+    return std::to_string(std::abs((int32_t) calculate_crc32(input)));
+  }
+
   std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, std::string app_image_path, int index) {
     // Generate id by hashing name with image data if present
     std::vector<std::string> to_hash;
@@ -611,11 +632,36 @@ namespace proc {
     auto input_with_index = ss.str();
 
     // CRC32 then truncate to signed 32-bit range due to client limitations
-    auto id_no_index = std::to_string(abs((int32_t) calculate_crc32(input_no_index)));
-    auto id_with_index = std::to_string(abs((int32_t) calculate_crc32(input_with_index)));
+    auto id_no_index = std::to_string(std::abs((int32_t) calculate_crc32(input_no_index)));
+    auto id_with_index = std::to_string(std::abs((int32_t) calculate_crc32(input_with_index)));
 
     return std::make_tuple(id_no_index, id_with_index);
   }
+
+#if ((defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)) || (defined(_WIN32) && defined(SUNSHINE_BUILD_UVC))
+  void append_uvc_apps(std::set<std::string> &ids, std::vector<proc::ctx_t> &apps) {
+    for (const auto &device : platf::uvc::enumerate_devices()) {
+      proc::ctx_t ctx;
+
+      ctx.name = "Capture Card: "s + device.display_name;
+      ctx.capture_source = device.id;
+      ctx.elevated = false;
+      ctx.auto_detach = true;
+      ctx.wait_all = true;
+      ctx.exit_timeout = std::chrono::seconds {5};
+
+      auto id_key = "uvc:"s + device.id;
+      auto app_id = stable_app_id_for_key(id_key);
+      for (int collision = 1; ids.contains(app_id); ++collision) {
+        app_id = stable_app_id_for_key(id_key + ":"s + std::to_string(collision));
+      }
+
+      ctx.id = std::move(app_id);
+      ids.insert(ctx.id);
+      apps.emplace_back(std::move(ctx));
+    }
+  }
+#endif
 
   std::optional<proc::proc_t> parse(const std::string &file_name) {
     pt::ptree tree;
@@ -645,6 +691,7 @@ namespace proc {
         auto name = parse_env_val(this_env, app_node.get<std::string>("name"s));
         auto cmd = app_node.get_optional<std::string>("cmd"s);
         auto image_path = app_node.get_optional<std::string>("image-path"s);
+        auto capture_source = app_node.get_optional<std::string>("capture-source"s);
         auto working_dir = app_node.get_optional<std::string>("working-dir"s);
         auto elevated = app_node.get_optional<bool>("elevated"s);
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
@@ -714,6 +761,9 @@ namespace proc {
         if (image_path) {
           ctx.image_path = parse_env_val(this_env, *image_path);
         }
+        if (capture_source) {
+          ctx.capture_source = parse_env_val(this_env, *capture_source);
+        }
 
         ctx.elevated = elevated.value_or(false);
         ctx.auto_detach = auto_detach.value_or(true);
@@ -736,6 +786,10 @@ namespace proc {
 
         apps.emplace_back(std::move(ctx));
       }
+
+#if ((defined(__linux__) || defined(linux) || defined(__linux)) && defined(SUNSHINE_BUILD_UVC)) || (defined(_WIN32) && defined(SUNSHINE_BUILD_UVC))
+      append_uvc_apps(ids, apps);
+#endif
 
       return proc::proc_t {
         std::move(this_env),

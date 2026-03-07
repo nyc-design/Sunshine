@@ -280,7 +280,8 @@ function Invoke-ScriptIfExist {
         [string]$ScriptPath,
         [string]$Arguments = "",
         [string]$Description = "",
-        [string]$Emoji = "🔧"
+        [string]$Emoji = "🔧",
+        [int]$TimeoutSeconds = 120
     )
 
     if ($Description) {
@@ -299,7 +300,6 @@ function Invoke-ScriptIfExist {
                 $process = Start-Process `
                     -FilePath $ScriptPath `
                     -ArgumentList $Arguments `
-                    -Wait `
                     -PassThru `
                     -NoNewWindow `
                     -RedirectStandardOutput $stdoutFile `
@@ -307,11 +307,17 @@ function Invoke-ScriptIfExist {
             } else {
                 $process = Start-Process `
                     -FilePath $ScriptPath `
-                    -Wait `
                     -PassThru `
                     -NoNewWindow `
                     -RedirectStandardOutput $stdoutFile `
                     -RedirectStandardError $stderrFile
+            }
+
+            # Avoid hanging installer/uninstaller indefinitely
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                Write-LogMessage -Message "  ⚠ Timeout (${TimeoutSeconds}s). Terminating script: $ScriptPath" -Level "Warning"
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                return 124
             }
 
             # Log and display the output
@@ -365,7 +371,8 @@ function Invoke-SunshineIfExist {
     param(
         [string]$Arguments,
         [string]$Description = "",
-        [string]$Emoji = "🔧"
+        [string]$Emoji = "🔧",
+        [int]$TimeoutSeconds = 60
     )
 
     if ($Description) {
@@ -385,11 +392,17 @@ function Invoke-SunshineIfExist {
             $process = Start-Process `
                 -FilePath $SunshinePath `
                 -ArgumentList $Arguments `
-                -Wait `
                 -PassThru `
                 -NoNewWindow `
                 -RedirectStandardOutput $stdoutFile `
                 -RedirectStandardError $stderrFile
+
+            # Avoid hanging installer/uninstaller indefinitely (e.g. blocked startup dialogs)
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                Write-LogMessage -Message "  ⚠ Timeout (${TimeoutSeconds}s). Terminating sunshine.exe" -Level "Warning"
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                return 124
+            }
 
             # Log and display the output
             if (Test-Path $stdoutFile) {

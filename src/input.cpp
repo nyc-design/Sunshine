@@ -1671,6 +1671,10 @@ namespace input {
   }
 
   bool probe_gamepads() {
+    if (config::input.controller_transport == "esp32"sv) {
+      return false;
+    }
+
     auto input = static_cast<platf::input_t *>(platf_input.get());
     const auto gamepads = platf::supported_gamepads(input);
     for (auto &gamepad : gamepads) {

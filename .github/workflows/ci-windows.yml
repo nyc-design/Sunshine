@@ -5,11 +5,33 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      build_profile:
+        required: false
+        type: string
+        default: full
       release_commit:
-        required: true
+        required: false
         type: string
       release_version:
+        required: false
+        type: string
+  workflow_dispatch:
+    inputs:
+      build_profile:
+        description: Build profile (fast = AMD64 NSIS installer + zip, full = AMD64+ARM64 NSIS+MSI+zip).
         required: true
+        type: choice
+        default: fast
+        options:
+          - fast
+          - full
+      release_commit:
+        description: Commit SHA to embed in the build metadata.
+        required: false
+        type: string
+      release_version:
+        description: Version string to embed in the build metadata.
+        required: false
         type: string
 
 jobs:
@@ -23,18 +45,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Windows-AMD64
-            os: windows-2022
-            arch: x86_64
-            msystem: ucrt64
-            toolchain: ucrt-x86_64
-          - name: Windows-ARM64
-            os: windows-11-arm
-            arch: aarch64
-            msystem: clangarm64
-            toolchain: clang-aarch64
+      matrix: ${{ fromJSON((inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full') && '{"include":[{"name":"Windows-AMD64","os":"windows-2022","arch":"x86_64","msystem":"ucrt64","toolchain":"ucrt-x86_64"},{"name":"Windows-ARM64","os":"windows-11-arm","arch":"aarch64","msystem":"clangarm64","toolchain":"clang-aarch64"}]}' || '{"include":[{"name":"Windows-AMD64","os":"windows-2022","arch":"x86_64","msystem":"ucrt64","toolchain":"ucrt-x86_64"}]}') }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -46,7 +57,7 @@ jobs:
         uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda  # v2.30.0
         with:
           msystem: ${{ matrix.msystem }}
-          update: true
+          update: ${{ inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full' }}
           install: >-
             wget
 
@@ -56,6 +67,7 @@ jobs:
           # Do not use this environment variable name.
           MATRIX_MSYSTEM: ${{ matrix.msystem }}
           TOOLCHAIN: ${{ matrix.toolchain }}
+          BUILD_PROFILE: ${{ inputs.build_profile || github.event.inputs.build_profile || 'fast' }}
         shell: msys2 {0}
         run: |
           # variables
@@ -69,14 +81,18 @@ jobs:
             "mingw-w64-${TOOLCHAIN}-cppwinrt"
             "mingw-w64-${TOOLCHAIN}-curl-winssl"
             "mingw-w64-${TOOLCHAIN}-gcc"
-            "mingw-w64-${TOOLCHAIN}-graphviz"
             "mingw-w64-${TOOLCHAIN}-miniupnpc"
             "mingw-w64-${TOOLCHAIN}-nlohmann-json"
             "mingw-w64-${TOOLCHAIN}-onevpl"
             "mingw-w64-${TOOLCHAIN}-openssl"
             "mingw-w64-${TOOLCHAIN}-opus"
-            "mingw-w64-${TOOLCHAIN}-toolchain"
           )
+
+          if [[ "${BUILD_PROFILE}" == "full" ]]; then
+            dependencies+=(
+              "mingw-w64-${TOOLCHAIN}-graphviz"
+            )
+          fi
 
           if [[ "${MATRIX_MSYSTEM}" == "ucrt64" ]]; then
             dependencies+=(
@@ -109,14 +125,22 @@ jobs:
             pacman -U --noconfirm "${tarballs}"
           fi
 
+          # Fast profile avoids full system upgrade (faster and avoids msys2 runtime restart).
+          if [[ "${BUILD_PROFILE}" == "full" ]]; then
+            pacman_install_cmd=(-Syu --noconfirm)
+          else
+            pacman_install_cmd=(-S --noconfirm --needed)
+          fi
+
           # Only add --ignore if we have packages to ignore
           if [ -n "${ignore_list}" ]; then
-            pacman -Syu --noconfirm --ignore="${ignore_list}" "${dependencies[@]}"
+            pacman "${pacman_install_cmd[@]}" --ignore="${ignore_list}" "${dependencies[@]}"
           else
-            pacman -Syu --noconfirm "${dependencies[@]}"
+            pacman "${pacman_install_cmd[@]}" "${dependencies[@]}"
           fi
 
       - name: Install Doxygen
+        if: ${{ inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full' }}
         # GCC compiled doxygen has issues when running graphviz
         env:
           DOXYGEN_VERSION: "1.11.0"
@@ -143,6 +167,7 @@ jobs:
           Remove-Item -Path doxygen-setup.exe
 
       - name: Setup dotnet  # needed for wix
+        if: ${{ inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full' }}
         uses: actions/setup-dotnet@baa11fbfe1d6520db94683bd5c7a3818018e4309  # v5.1.0
         with:
           dotnet-version: '10.x'
@@ -170,12 +195,14 @@ jobs:
           echo "nodejs-path=$NODEJS_PATH" >> $env:GITHUB_OUTPUT
 
       - name: Setup python
+        if: ${{ inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full' }}
         id: setup-python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.14'
 
       - name: Python Path
+        if: ${{ inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full' }}
         id: python-path
         shell: msys2 {0}
         run: |
@@ -192,14 +219,23 @@ jobs:
           # MSYSTEM is a built-in environment variable of MSYS2.
           # Do not use this environment variable name.
           MATRIX_MSYSTEM: ${{ matrix.msystem }}
+          BUILD_PROFILE: ${{ inputs.build_profile || github.event.inputs.build_profile || 'fast' }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
-          BUILD_VERSION: ${{ inputs.release_version }}
-          COMMIT: ${{ inputs.release_commit }}
+          BUILD_VERSION: ${{ inputs.release_version || format('0.0.{0}', github.run_number) }}
+          COMMIT: ${{ inputs.release_commit || github.sha }}
         run: |
           # setup NodeJS PATH
           if [[ "${MATRIX_MSYSTEM}" != "ucrt64" ]]; then
             NODEJS_PATH=$(cygpath "$NODEJS_PATH")
             export PATH="$PATH:$NODEJS_PATH"
+          fi
+
+          if [[ "${BUILD_PROFILE}" == "full" ]]; then
+            BUILD_DOCS=ON
+            BUILD_TESTS=ON
+          else
+            BUILD_DOCS=OFF
+            BUILD_TESTS=OFF
           fi
 
           mkdir -p build
@@ -208,6 +244,8 @@ jobs:
             -G Ninja \
             -S . \
             -DBUILD_WERROR=ON \
+            -DBUILD_DOCS=${BUILD_DOCS} \
+            -DBUILD_TESTS=${BUILD_TESTS} \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
@@ -219,19 +257,32 @@ jobs:
 
       - name: Package Windows
         shell: msys2 {0}
+        env:
+          BUILD_PROFILE: ${{ inputs.build_profile || github.event.inputs.build_profile || 'fast' }}
         run: |
           mkdir -p artifacts
           cd build
 
-          # package
+          # package nsis installer (all profiles)
           cpack -G NSIS
-          cpack -G WIX
+          mv ./cpack_artifacts/Sunshine.exe ../artifacts/Sunshine-${{ matrix.name }}-installer.exe
+
+          # package full profile msi
+          if [[ "${BUILD_PROFILE}" == "full" ]]; then
+            cpack -G WIX
+            mv ./cpack_artifacts/Sunshine.msi ../artifacts/Sunshine-${{ matrix.name }}-installer.msi
+          fi
+
+          # package portable zip (always)
           cpack -G ZIP
 
-          # move
-          mv ./cpack_artifacts/Sunshine.exe ../artifacts/Sunshine-${{ matrix.name }}-installer.exe
-          mv ./cpack_artifacts/Sunshine.msi ../artifacts/Sunshine-${{ matrix.name }}-installer.msi
           mv ./cpack_artifacts/Sunshine.zip ../artifacts/Sunshine-${{ matrix.name }}-portable.zip
+
+      - name: Verify Opus runtime bundled
+        shell: msys2 {0}
+        run: |
+          bsdtar -tf ./artifacts/Sunshine-${{ matrix.name }}-portable.zip | tr -d '\r' \
+            | grep -E '(^|/)libopus-0\.dll$|(^|/)opus\.dll$'
 
       - name: Debug nsis
         if: always()
@@ -239,11 +290,12 @@ jobs:
         run: cat ./build/cpack_artifacts/_CPack_Packages/win64/NSIS/NSISOutput.log || true
 
       - name: Debug wix
-        if: always()
+        if: ${{ always() && (inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full') }}
         shell: msys2 {0}
         run: cat ./build/cpack_artifacts/_CPack_Packages/win64/WIX/wix.log || true
 
       - name: Run tests
+        if: ${{ inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full' }}
         id: test
         shell: msys2 {0}
         working-directory: build/tests
@@ -280,6 +332,7 @@ jobs:
           if-no-files-found: error
 
       - name: Package Windows Debug Info
+        if: ${{ inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full' }}
         shell: pwsh
         working-directory: build
         run: |

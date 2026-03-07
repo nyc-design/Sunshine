@@ -48,6 +48,60 @@ const config = ref(props.config)
       <div class="form-text">{{ $t('config.gamepad_desc') }}</div>
     </div>
 
+    <!-- Controller transport -->
+    <div class="mb-3" v-if="config.controller === 'enabled' && (platform === 'linux' || platform === 'windows')">
+      <label for="controller_transport" class="form-label">{{ $t('config.controller_transport') }}</label>
+      <select id="controller_transport" class="form-select" v-model="config.controller_transport">
+        <option value="host">{{ $t('config.controller_transport_host') }}</option>
+        <option value="esp32">{{ $t('config.controller_transport_esp32') }}</option>
+      </select>
+      <div class="form-text">{{ $t('config.controller_transport_desc') }}</div>
+    </div>
+
+    <!-- ESP32 serial transport options -->
+    <template v-if="config.controller === 'enabled' && (platform === 'linux' || platform === 'windows') && config.controller_transport === 'esp32'">
+      <div class="mb-3">
+        <label for="esp32_serial_port" class="form-label">{{ $t('config.esp32_serial_port') }}</label>
+        <input id="esp32_serial_port"
+               type="text"
+               class="form-control"
+               placeholder="COM3 or /dev/ttyACM0"
+               v-model="config.esp32_serial_port" />
+        <div class="form-text">{{ $t('config.esp32_serial_port_desc') }}</div>
+      </div>
+
+      <div class="mb-3">
+        <label for="esp32_baud" class="form-label">{{ $t('config.esp32_baud') }}</label>
+        <input id="esp32_baud"
+               type="number"
+               class="form-control"
+               placeholder="115200"
+               v-model="config.esp32_baud" />
+        <div class="form-text">{{ $t('config.esp32_baud_desc') }}</div>
+      </div>
+
+      <div class="mb-3">
+        <label for="esp32_mode" class="form-label">{{ $t('config.esp32_mode') }}</label>
+        <select id="esp32_mode" class="form-select" v-model="config.esp32_mode">
+          <option value="gamepad">{{ $t('config.esp32_mode_gamepad') }}</option>
+          <option value="switch_controller">{{ $t('config.esp32_mode_switch_controller') }}</option>
+        </select>
+        <div class="form-text">{{ $t('config.esp32_mode_desc') }}</div>
+      </div>
+
+      <div class="mb-3">
+        <label for="esp32_delivery_policy" class="form-label">{{ $t('config.esp32_delivery_policy') }}</label>
+        <select id="esp32_delivery_policy" class="form-select" v-model="config.esp32_delivery_policy">
+          <option value="auto">{{ $t('config.esp32_delivery_policy_auto') }}</option>
+          <option value="wired">{{ $t('config.esp32_delivery_policy_wired') }}</option>
+          <option value="bluetooth">{{ $t('config.esp32_delivery_policy_bluetooth') }}</option>
+          <option value="websocket">{{ $t('config.esp32_delivery_policy_websocket') }}</option>
+          <option value="http">{{ $t('config.esp32_delivery_policy_http') }}</option>
+        </select>
+        <div class="form-text">{{ $t('config.esp32_delivery_policy_desc') }}</div>
+      </div>
+    </template>
+
     <!-- Additional options based on gamepad type -->
     <template v-if="config.controller === 'enabled'">
       <template v-if="config.gamepad === 'ds4' || config.gamepad === 'ds5' || (config.gamepad === 'auto' && platform !== 'macos')">
