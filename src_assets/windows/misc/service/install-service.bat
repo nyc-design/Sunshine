@@ -13,14 +13,13 @@ rem Set service to demand start. It will be changed to auto later if the user se
 set SERVICE_START_TYPE=demand
 
 rem Remove the legacy SunshineSvc service
-net stop sunshinesvc
-sc delete sunshinesvc
+call :stop_and_delete_service sunshinesvc
 
 rem Check if SunshineService already exists
 sc qc %SERVICE_NAME% > nul 2>&1
 if %ERRORLEVEL%==0 (
     rem Stop the existing service if running
-    net stop %SERVICE_NAME%
+    call :stop_service %SERVICE_NAME%
 
     rem Reconfigure the existing service
     set SC_CMD=config
@@ -65,3 +64,27 @@ sc description %SERVICE_NAME% "Sunshine is a self-hosted game stream host for Mo
 
 rem Start the new service
 net start %SERVICE_NAME%
+exit /b 0
+
+:stop_service
+set "_SVC_NAME=%~1"
+sc query "%_SVC_NAME%" >nul 2>&1
+if not %ERRORLEVEL%==0 exit /b 0
+sc stop "%_SVC_NAME%" >nul 2>&1
+set /a wait_count=0
+:wait_loop
+set /a wait_count+=1
+sc query "%_SVC_NAME%" | findstr /C:"STATE" | findstr /C:"STOPPED" >nul
+if %ERRORLEVEL%==0 exit /b 0
+if %wait_count% GEQ 20 goto force_kill
+timeout /t 1 /nobreak >nul
+goto wait_loop
+
+:force_kill
+taskkill /F /FI "SERVICES eq %_SVC_NAME%" >nul 2>&1
+exit /b 0
+
+:stop_and_delete_service
+call :stop_service %~1
+sc delete "%~1" >nul 2>&1
+exit /b 0
