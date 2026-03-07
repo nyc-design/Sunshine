@@ -1,0 +1,17 @@
+---
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - 'feature/**'
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  windows:
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      build_profile: fast
