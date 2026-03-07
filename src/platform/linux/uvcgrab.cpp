@@ -23,10 +23,16 @@
 #include <fcntl.h>
 #include <linux/videodev2.h>
 
+// lib includes
+extern "C" {
+#include <libswscale/swscale.h>
+}
+
 // local includes
 #include "uvcgrab.h"
 #include "src/logging.h"
 #include "src/utility.h"
+#include "src/video.h"
 
 using namespace std::literals;
 namespace fs = std::filesystem;
@@ -184,25 +190,6 @@ namespace platf {
       }
     }
 
-    std::uint8_t clamp_u8(int value) {
-      return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
-    }
-
-    void yuv_to_bgr0(int y, int u, int v, std::uint8_t *dst) {
-      const int c = y - 16;
-      const int d = u - 128;
-      const int e = v - 128;
-
-      const int r = (298 * c + 409 * e + 128) >> 8;
-      const int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-      const int b = (298 * c + 516 * d + 128) >> 8;
-
-      dst[0] = clamp_u8(b);
-      dst[1] = clamp_u8(g);
-      dst[2] = clamp_u8(r);
-      dst[3] = 0;
-    }
-
     class uvc_display_t: public display_t {
     public:
       ~uvc_display_t() override {
@@ -212,8 +199,6 @@ namespace platf {
       int init(std::string source_name, std::string device_path, const video::config_t &config) {
         source_name_ = std::move(source_name);
         device_path_ = std::move(device_path);
-
-        delay_ = std::chrono::nanoseconds {1s} / std::max(1, config.framerate);
 
         fd_ = ::open(device_path_.c_str(), O_RDWR | O_NONBLOCK);
         if (fd_ < 0) {
@@ -250,27 +235,15 @@ namespace platf {
           return -1;
         }
 
-        BOOST_LOG(info) << "UVC: capturing from "sv << source_name_ << " ["sv << device_path_ << "] "sv << width << 'x' << height;
+        BOOST_LOG(info) << "UVC: capturing from "sv << source_name_ << " ["sv << device_path_ << "] "sv
+                        << width << 'x' << height << " (passthrough=" << (nv12_passthrough_ ? "yes" : "no") << ')';
         return 0;
       }
 
+      // Event-driven capture: poll waits for the device to deliver a frame.
+      // No software rate limiting — the capture card IS the timing source.
       capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool * /*cursor*/) override {
-        auto next_frame = std::chrono::steady_clock::now();
-        sleep_overshoot_logger.reset();
-
         while (true) {
-          auto now = std::chrono::steady_clock::now();
-          if (next_frame > now) {
-            std::this_thread::sleep_for(next_frame - now);
-            sleep_overshoot_logger.first_point(next_frame);
-            sleep_overshoot_logger.second_point_now_and_log();
-          }
-
-          next_frame += delay_;
-          if (next_frame < now) {
-            next_frame = now + delay_;
-          }
-
           std::shared_ptr<img_t> img_out;
           if (!pull_free_image_cb(img_out)) {
             return capture_e::interrupted;
@@ -302,9 +275,23 @@ namespace platf {
         auto img = std::make_shared<uvc_img_t>();
         img->width = width;
         img->height = height;
-        img->pixel_pitch = 4;
-        img->row_pitch = width * img->pixel_pitch;
-        img->backing.resize(static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height));
+
+        if (nv12_passthrough_) {
+          img->pixel_pitch = 1;
+          img->row_pitch = width;
+          img->source_format = img_t::nv12;
+          const auto y_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+          const auto uv_size = static_cast<std::size_t>(width) * static_cast<std::size_t>((height + 1) / 2);
+          img->backing.resize(y_size + uv_size);
+          img->uv_offset = static_cast<std::int32_t>(y_size);
+          img->uv_pitch = width;
+        } else {
+          img->pixel_pitch = 4;
+          img->row_pitch = width * 4;
+          img->source_format = img_t::bgr0;
+          img->backing.resize(static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(height));
+        }
+
         img->data = img->backing.data();
         return img;
       }
@@ -314,15 +301,26 @@ namespace platf {
           return -1;
         }
 
-        const auto bytes = static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height);
-        std::fill_n(img->data, bytes, 0);
+        if (img->source_format == img_t::nv12) {
+          const auto y_size = static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height);
+          const auto uv_size = static_cast<std::size_t>(img->uv_pitch) * static_cast<std::size_t>((img->height + 1) / 2);
+          std::fill_n(img->data, y_size, static_cast<std::uint8_t>(16));
+          std::fill_n(img->data + img->uv_offset, uv_size, static_cast<std::uint8_t>(128));
+        } else {
+          const auto bytes = static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height);
+          std::fill_n(img->data, bytes, 0);
+        }
+
         img->frame_timestamp = std::chrono::steady_clock::now();
         return 0;
       }
 
       std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e /*pix_fmt*/) override {
-        // Software conversion path in video.cpp can consume BGR0 frames directly.
         return std::make_unique<avcodec_encode_device_t>();
+      }
+
+      bool is_codec_supported(std::string_view /*name*/, const ::video::config_t & /*config*/) override {
+        return true;
       }
 
     private:
@@ -335,17 +333,19 @@ namespace platf {
           return -1;
         }
 
+        // NV12 first: encoder's native format, enables zero-conversion passthrough.
         constexpr std::array preferred_formats {
+          V4L2_PIX_FMT_NV12,
 #ifdef V4L2_PIX_FMT_BGR32
           V4L2_PIX_FMT_BGR32,
 #endif
 #ifdef V4L2_PIX_FMT_XBGR32
           V4L2_PIX_FMT_XBGR32,
 #endif
-          V4L2_PIX_FMT_BGR24,
-          V4L2_PIX_FMT_RGB24,
           V4L2_PIX_FMT_YUYV,
           V4L2_PIX_FMT_UYVY,
+          V4L2_PIX_FMT_BGR24,
+          V4L2_PIX_FMT_RGB24,
         };
 
         bool format_selected = false;
@@ -390,6 +390,9 @@ namespace platf {
         bytes_per_line_ = fmt.fmt.pix.bytesperline;
         if (bytes_per_line_ == 0) {
           switch (pixel_format_) {
+            case V4L2_PIX_FMT_NV12:
+              bytes_per_line_ = static_cast<std::uint32_t>(width);
+              break;
 #ifdef V4L2_PIX_FMT_BGR32
             case V4L2_PIX_FMT_BGR32:
 #endif
@@ -409,6 +412,25 @@ namespace platf {
             default:
               break;
           }
+        }
+
+        nv12_passthrough_ = (pixel_format_ == V4L2_PIX_FMT_NV12);
+
+        // Initialize sws_scale for YUV packed formats (SIMD-accelerated).
+        if (pixel_format_ == V4L2_PIX_FMT_YUYV) {
+          sws_.reset(sws_getContext(width, height, AV_PIX_FMT_YUYV422, width, height, AV_PIX_FMT_BGR0, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr));
+          if (!sws_) {
+            BOOST_LOG(error) << "UVC: failed to initialize YUYV conversion context"sv;
+            return -1;
+          }
+        } else if (pixel_format_ == V4L2_PIX_FMT_UYVY) {
+          sws_.reset(sws_getContext(width, height, AV_PIX_FMT_UYVY422, width, height, AV_PIX_FMT_BGR0, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr));
+          if (!sws_) {
+            BOOST_LOG(error) << "UVC: failed to initialize UYVY conversion context"sv;
+            return -1;
+          }
+        } else {
+          sws_.reset();
         }
 
         if (!is_supported_pixel_format(pixel_format_)) {
@@ -535,7 +557,7 @@ namespace platf {
           return capture_e::error;
         }
 
-        if (convert_to_bgr0(src, buf.bytesused, img)) {
+        if (convert_frame(src, buf.bytesused, img)) {
           return capture_e::error;
         }
 
@@ -543,14 +565,73 @@ namespace platf {
         return capture_e::ok;
       }
 
-      int convert_to_bgr0(const std::uint8_t *src, std::size_t bytes_used, img_t *img) {
+      int convert_frame(const std::uint8_t *src, std::size_t bytes_used, img_t *img) {
         if (!src || !img || !img->data) {
           return -1;
         }
 
-        const auto dst_stride = static_cast<std::size_t>(img->row_pitch);
         const auto src_stride = static_cast<std::size_t>(bytes_per_line_);
+
+        // NV12 passthrough: copy planes directly, no color conversion.
+        if (nv12_passthrough_) {
+          const auto y_plane_size = src_stride * static_cast<std::size_t>(height);
+          const auto uv_height = static_cast<std::size_t>((height + 1) / 2);
+          const auto uv_plane_size = src_stride * uv_height;
+          if (bytes_used < y_plane_size + uv_plane_size) {
+            return -1;
+          }
+
+          const auto dst_y_stride = static_cast<std::size_t>(img->row_pitch);
+          const auto line_bytes = static_cast<std::size_t>(width);
+
+          // Y plane
+          if (src_stride == dst_y_stride) {
+            std::memcpy(img->data, src, y_plane_size);
+          } else {
+            for (int y = 0; y < height; ++y) {
+              std::memcpy(img->data + static_cast<std::size_t>(y) * dst_y_stride,
+                          src + static_cast<std::size_t>(y) * src_stride, line_bytes);
+            }
+          }
+
+          // UV plane
+          auto *uv_dst = img->data + img->uv_offset;
+          auto *uv_src = src + y_plane_size;
+          const auto dst_uv_stride = static_cast<std::size_t>(img->uv_pitch);
+          if (src_stride == dst_uv_stride) {
+            std::memcpy(uv_dst, uv_src, uv_plane_size);
+          } else {
+            for (std::size_t y = 0; y < uv_height; ++y) {
+              std::memcpy(uv_dst + y * dst_uv_stride, uv_src + y * src_stride, line_bytes);
+            }
+          }
+          return 0;
+        }
+
+        const auto dst_stride = static_cast<std::size_t>(img->row_pitch);
         auto *dst_base = img->data;
+
+        // YUV packed formats: use SIMD-accelerated sws_scale.
+        if (pixel_format_ == V4L2_PIX_FMT_YUYV || pixel_format_ == V4L2_PIX_FMT_UYVY) {
+          if (!sws_) {
+            return -1;
+          }
+
+          const auto frame_bytes = src_stride * static_cast<std::size_t>(height);
+          if (frame_bytes > bytes_used) {
+            return -1;
+          }
+
+          std::array<const std::uint8_t *, 4> src_data {src, nullptr, nullptr, nullptr};
+          std::array<int, 4> src_linesize {static_cast<int>(bytes_per_line_), 0, 0, 0};
+          std::array<std::uint8_t *, 4> dst_data {dst_base, nullptr, nullptr, nullptr};
+          std::array<int, 4> dst_linesize {img->row_pitch, 0, 0, 0};
+
+          if (sws_scale(sws_.get(), src_data.data(), src_linesize.data(), 0, height, dst_data.data(), dst_linesize.data()) != height) {
+            return -1;
+          }
+          return 0;
+        }
 
         switch (pixel_format_) {
 #ifdef V4L2_PIX_FMT_BGR32
@@ -610,54 +691,6 @@ namespace platf {
               return 0;
             }
 
-          case V4L2_PIX_FMT_YUYV:
-            {
-              for (int y = 0; y < height; ++y) {
-                const auto src_off = static_cast<std::size_t>(y) * src_stride;
-                const auto dst_off = static_cast<std::size_t>(y) * dst_stride;
-                const auto *line = src + src_off;
-                auto *out = dst_base + dst_off;
-
-                for (int x = 0; x < width; x += 2) {
-                  const auto px_off = static_cast<std::size_t>(x) * 2;
-                  const int y0 = line[px_off + 0];
-                  const int u = line[px_off + 1];
-                  const int y1 = line[px_off + 2];
-                  const int v = line[px_off + 3];
-
-                  yuv_to_bgr0(y0, u, v, out + static_cast<std::size_t>(x) * 4);
-                  if (x + 1 < width) {
-                    yuv_to_bgr0(y1, u, v, out + static_cast<std::size_t>(x + 1) * 4);
-                  }
-                }
-              }
-              return 0;
-            }
-
-          case V4L2_PIX_FMT_UYVY:
-            {
-              for (int y = 0; y < height; ++y) {
-                const auto src_off = static_cast<std::size_t>(y) * src_stride;
-                const auto dst_off = static_cast<std::size_t>(y) * dst_stride;
-                const auto *line = src + src_off;
-                auto *out = dst_base + dst_off;
-
-                for (int x = 0; x < width; x += 2) {
-                  const auto px_off = static_cast<std::size_t>(x) * 2;
-                  const int u = line[px_off + 0];
-                  const int y0 = line[px_off + 1];
-                  const int v = line[px_off + 2];
-                  const int y1 = line[px_off + 3];
-
-                  yuv_to_bgr0(y0, u, v, out + static_cast<std::size_t>(x) * 4);
-                  if (x + 1 < width) {
-                    yuv_to_bgr0(y1, u, v, out + static_cast<std::size_t>(x + 1) * 4);
-                  }
-                }
-              }
-              return 0;
-            }
-
           default:
             BOOST_LOG(error) << "UVC: unsupported pixel format conversion for 0x"sv << util::hex(pixel_format_).to_string_view();
             return -1;
@@ -666,6 +699,7 @@ namespace platf {
 
       bool is_supported_pixel_format(std::uint32_t pix_fmt) const {
         switch (pix_fmt) {
+          case V4L2_PIX_FMT_NV12:
 #ifdef V4L2_PIX_FMT_BGR32
           case V4L2_PIX_FMT_BGR32:
 #endif
@@ -683,6 +717,8 @@ namespace platf {
       }
 
       void stop() {
+        sws_.reset();
+
         if (fd_ >= 0 && streaming_) {
           v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
           if (!xioctl(fd_, VIDIOC_STREAMOFF, &type)) {
@@ -712,9 +748,10 @@ namespace platf {
       bool streaming_ {false};
       std::vector<mapped_buffer_t> buffers_;
 
-      std::chrono::nanoseconds delay_ {16666666ns};
       std::uint32_t pixel_format_ {};
       std::uint32_t bytes_per_line_ {};
+      bool nv12_passthrough_ {false};
+      video::sws_t sws_;
     };
 
     const uvc::device_info_t *find_device(std::string_view display_name, const std::vector<uvc::device_info_t> &devices) {

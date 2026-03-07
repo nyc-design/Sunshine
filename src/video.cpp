@@ -129,6 +129,12 @@ namespace video {
   class avcodec_software_encode_device_t: public platf::avcodec_encode_device_t {
   public:
     int convert(platf::img_t &img) override {
+      // NV12 passthrough fast path: when capture delivers NV12 and encoder wants NV12,
+      // skip sws_scale entirely and copy planes directly.
+      if (img.source_format == platf::img_t::nv12) {
+        return convert_nv12_passthrough(img);
+      }
+
       // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer
       bool requires_padding = (sw_frame->width != sws_output_frame->width || sw_frame->height != sws_output_frame->height);
 
@@ -277,6 +283,118 @@ namespace video {
       return 0;
     }
 
+    /**
+     * NV12 passthrough: when the capture source delivers NV12 and the target
+     * format is also NV12 at matching dimensions, copy planes directly —
+     * eliminating two sws_scale calls (NV12→BGR0 in capture, BGR0→NV12 in encode).
+     * When the target is not NV12 or dimensions differ, use a dedicated NV12→target
+     * sws context initialized lazily on first use.
+     */
+    int convert_nv12_passthrough(platf::img_t &img) {
+      auto *target = sw_frame ? sw_frame.get() : frame;
+      const auto target_fmt = static_cast<AVPixelFormat>(target->format);
+      const bool same_size = (img.width == target->width && img.height == target->height);
+
+      // Fast path: NV12 source, NV12 target, same dimensions — direct plane copy.
+      if (same_size && (target_fmt == AV_PIX_FMT_NV12)) {
+        // Y plane
+        const auto y_line_bytes = static_cast<std::size_t>(img.width);
+        for (int y = 0; y < img.height; ++y) {
+          std::memcpy(
+            target->data[0] + static_cast<std::size_t>(y) * target->linesize[0],
+            img.data + static_cast<std::size_t>(y) * img.row_pitch,
+            y_line_bytes
+          );
+        }
+
+        // UV plane
+        const auto uv_height = (img.height + 1) / 2;
+        auto *uv_src = img.data + img.uv_offset;
+        for (int y = 0; y < uv_height; ++y) {
+          std::memcpy(
+            target->data[1] + static_cast<std::size_t>(y) * target->linesize[1],
+            uv_src + static_cast<std::size_t>(y) * img.uv_pitch,
+            y_line_bytes
+          );
+        }
+
+        // Upload to GPU if needed
+        if (frame->hw_frames_ctx) {
+          auto status = av_hwframe_transfer_data(frame, sw_frame.get(), 0);
+          if (status < 0) {
+            char string[AV_ERROR_MAX_STRING_SIZE];
+            BOOST_LOG(error) << "Failed to transfer NV12 frame to hardware: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+            return -1;
+          }
+        }
+
+        return 0;
+      }
+
+      // Slow path: NV12 source but target is not NV12 or dimensions differ.
+      // Use a lazily-initialized NV12→target sws context.
+      if (!nv12_sws) {
+        nv12_sws.reset(sws_alloc_context());
+        if (!nv12_sws) {
+          return -1;
+        }
+
+        AVDictionary *options {nullptr};
+        av_dict_set_int(&options, "srcw", img.width, 0);
+        av_dict_set_int(&options, "srch", img.height, 0);
+        av_dict_set_int(&options, "src_format", AV_PIX_FMT_NV12, 0);
+        av_dict_set_int(&options, "dstw", target->width, 0);
+        av_dict_set_int(&options, "dsth", target->height, 0);
+        av_dict_set_int(&options, "dst_format", target->format, 0);
+        av_dict_set_int(&options, "sws_flags", SWS_LANCZOS | SWS_ACCURATE_RND, 0);
+        av_dict_set_int(&options, "threads", config::video.min_threads, 0);
+
+        auto status = av_opt_set_dict(nv12_sws.get(), &options);
+        av_dict_free(&options);
+        if (status < 0) {
+          nv12_sws.reset();
+          return -1;
+        }
+
+        status = sws_init_context(nv12_sws.get(), nullptr, nullptr);
+        if (status < 0) {
+          nv12_sws.reset();
+          return -1;
+        }
+
+        nv12_input_frame.reset(av_frame_alloc());
+        nv12_input_frame->width = img.width;
+        nv12_input_frame->height = img.height;
+        nv12_input_frame->format = AV_PIX_FMT_NV12;
+
+        BOOST_LOG(info) << "UVC NV12 passthrough: initialized NV12→" << av_get_pix_fmt_name(target_fmt) << " conversion";
+      }
+
+      // Set up NV12 input planes
+      nv12_input_frame->data[0] = img.data;
+      nv12_input_frame->linesize[0] = img.row_pitch;
+      nv12_input_frame->data[1] = img.data + img.uv_offset;
+      nv12_input_frame->linesize[1] = img.uv_pitch;
+
+      auto status = sws_scale_frame(nv12_sws.get(), target, nv12_input_frame.get());
+      if (status < 0) {
+        char string[AV_ERROR_MAX_STRING_SIZE];
+        BOOST_LOG(error) << "Couldn't scale NV12 frame: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+        return -1;
+      }
+
+      if (frame->hw_frames_ctx) {
+        status = av_hwframe_transfer_data(frame, sw_frame.get(), 0);
+        if (status < 0) {
+          char string[AV_ERROR_MAX_STRING_SIZE];
+          BOOST_LOG(error) << "Failed to transfer NV12-converted frame to hardware: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+          return -1;
+        }
+      }
+
+      return 0;
+    }
+
     // Store ownership when frame is hw_frame
     avcodec_frame_t hw_frame;
 
@@ -284,6 +402,10 @@ namespace video {
     avcodec_frame_t sws_input_frame;
     avcodec_frame_t sws_output_frame;
     sws_t sws;
+
+    // NV12 passthrough: lazily-initialized context for NV12→target conversion
+    sws_t nv12_sws;
+    avcodec_frame_t nv12_input_frame;
 
     // Offset of input image to output frame in pixels
     int offsetW;

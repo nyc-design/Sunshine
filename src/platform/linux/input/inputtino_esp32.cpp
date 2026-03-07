@@ -283,7 +283,7 @@ namespace platf::esp32 {
 
   void serial_client_t::writer_loop() {
     while (true) {
-      std::string line;
+      std::string batch;
       {
         std::unique_lock lock(queue_mutex_);
         queue_cv_.wait(lock, [this]() {
@@ -294,21 +294,27 @@ namespace platf::esp32 {
           break;
         }
 
-        if (!queue_.empty()) {
-          line = std::move(queue_.front());
+        // Drain all pending items into a single batch for one write syscall.
+        while (!queue_.empty()) {
+          batch += queue_.front();
           queue_.pop_front();
-        } else if (pending_hat_dirty_) {
-          line = make_hat_line(pending_hat_);
-          pending_hat_dirty_ = false;
-        } else if (pending_left_.dirty) {
-          line = make_stick_line("left", pending_left_.x, pending_left_.y);
-          pending_left_.dirty = false;
-        } else if (pending_right_.dirty) {
-          line = make_stick_line("right", pending_right_.x, pending_right_.y);
-          pending_right_.dirty = false;
-        } else {
-          continue;
         }
+        if (pending_hat_dirty_) {
+          batch += make_hat_line(pending_hat_);
+          pending_hat_dirty_ = false;
+        }
+        if (pending_left_.dirty) {
+          batch += make_stick_line("left", pending_left_.x, pending_left_.y);
+          pending_left_.dirty = false;
+        }
+        if (pending_right_.dirty) {
+          batch += make_stick_line("right", pending_right_.x, pending_right_.y);
+          pending_right_.dirty = false;
+        }
+      }
+
+      if (batch.empty()) {
+        continue;
       }
 
       if (!ensure_open()) {
@@ -316,7 +322,7 @@ namespace platf::esp32 {
         continue;
       }
 
-      if (!write_all(fd_, line.data(), line.size())) {
+      if (!write_all(fd_, batch.data(), batch.size())) {
         BOOST_LOG(warning) << "ESP32 serial write failed on "sv << port_ << ": "sv << strerror(errno);
         close_port();
         std::this_thread::sleep_for(200ms);
@@ -383,7 +389,7 @@ namespace platf::esp32 {
     const bool left = button_flags & platf::DPAD_LEFT;
     const bool right = button_flags & platf::DPAD_RIGHT;
 
-    // Firmware currently supports cardinal directions only.
+    // Cardinal directions
     if (up && !down && !left && !right) {
       return "DUP"s;
     }
@@ -395,6 +401,20 @@ namespace platf::esp32 {
     }
     if (right && !left && !up && !down) {
       return "DRIGHT"s;
+    }
+
+    // Diagonal directions
+    if (up && right && !down && !left) {
+      return "DUPRIGHT"s;
+    }
+    if (up && left && !down && !right) {
+      return "DUPLEFT"s;
+    }
+    if (down && right && !up && !left) {
+      return "DDOWNRIGHT"s;
+    }
+    if (down && left && !up && !right) {
+      return "DDOWNLEFT"s;
     }
 
     return "center"s;

@@ -564,7 +564,7 @@ namespace config {
 #else
     "/dev/ttyACM0",  // esp32_serial_port
 #endif
-    115200,  // esp32_baud
+    921600,  // esp32_baud
     "gamepad",  // esp32_mode
     "auto",  // esp32_delivery_policy
     true,  // always send scancodes

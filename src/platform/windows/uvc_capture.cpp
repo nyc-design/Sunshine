@@ -303,9 +303,24 @@ namespace platf {
         auto img = std::make_shared<uvc_img_t>();
         img->width = width;
         img->height = height;
-        img->pixel_pitch = 4;
-        img->row_pitch = width * img->pixel_pitch;
-        img->backing.resize(static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height));
+
+        if (nv12_passthrough_) {
+          // NV12: Y plane (width * height) + UV plane (width * height/2)
+          img->pixel_pitch = 1;
+          img->row_pitch = width;
+          img->source_format = img_t::nv12;
+          const auto y_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+          const auto uv_size = static_cast<std::size_t>(width) * static_cast<std::size_t>((height + 1) / 2);
+          img->backing.resize(y_size + uv_size);
+          img->uv_offset = static_cast<std::int32_t>(y_size);
+          img->uv_pitch = width;
+        } else {
+          img->pixel_pitch = 4;
+          img->row_pitch = width * 4;
+          img->source_format = img_t::bgr0;
+          img->backing.resize(static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(height));
+        }
+
         img->data = img->backing.data();
         return img;
       }
@@ -315,27 +330,46 @@ namespace platf {
           return -1;
         }
 
-        const auto bytes = static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height);
-        std::fill_n(img->data, bytes, 0);
+        std::size_t bytes;
+        if (img->source_format == img_t::nv12) {
+          bytes = static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height) +
+                  static_cast<std::size_t>(img->uv_pitch) * static_cast<std::size_t>((img->height + 1) / 2);
+          // NV12 black: Y=16 (limited range black), UV=128 (neutral chroma)
+          const auto y_size = static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height);
+          std::fill_n(img->data, y_size, static_cast<std::uint8_t>(16));
+          std::fill_n(img->data + img->uv_offset, bytes - y_size, static_cast<std::uint8_t>(128));
+        } else {
+          bytes = static_cast<std::size_t>(img->row_pitch) * static_cast<std::size_t>(img->height);
+          std::fill_n(img->data, bytes, 0);
+        }
+
         img->frame_timestamp = std::chrono::steady_clock::now();
         return 0;
       }
 
       std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e /*pix_fmt*/) override {
+        // Return base class with null data — video.cpp will create avcodec_software_encode_device_t
+        // which handles BGR0→NV12 conversion and av_hwframe_transfer_data for hw encoders.
         return std::make_unique<avcodec_encode_device_t>();
       }
 
-      bool is_codec_supported(std::string_view name, const ::video::config_t & /*config*/) override {
-        // The Windows custom NVENC path depends on desktop capture textures. UVC currently routes through avcodec paths.
-        return name.find("_nvenc") == std::string_view::npos;
+      bool is_codec_supported(std::string_view /*name*/, const ::video::config_t & /*config*/) override {
+        // Allow all codecs including NVENC through the avcodec software upload path.
+        // The custom NVENC texture path won't be used (we don't override make_nvenc_encode_device),
+        // but h264_nvenc/hevc_nvenc via FFmpeg will work through avcodec_software_encode_device_t
+        // with av_hwframe_transfer_data for GPU upload.
+        return true;
       }
 
     private:
       int select_media_type(const video::config_t &config) {
+        // NV12 first: it's the encoder's native format, avoiding double color conversion.
+        // YUY2 second: common capture card format, converted via sws_scale.
+        // RGB32 last: fallback, direct memcpy but requires encoder-side conversion.
         static const std::array preferred_types {
-          MFVideoFormat_RGB32,
-          MFVideoFormat_YUY2,
           MFVideoFormat_NV12,
+          MFVideoFormat_YUY2,
+          MFVideoFormat_RGB32,
         };
 
         HRESULT hr = S_OK;
@@ -406,7 +440,15 @@ namespace platf {
           default_stride = static_cast<int>(raw_stride);
         }
 
-        if (subtype_ == MFVideoFormat_RGB32) {
+        // NV12 passthrough: pass raw NV12 data directly to encoder, avoiding double conversion.
+        nv12_passthrough_ = (subtype_ == MFVideoFormat_NV12);
+
+        if (subtype_ == MFVideoFormat_NV12) {
+          if (default_stride == 0) {
+            default_stride = width;
+          }
+          sws_.reset();
+        } else if (subtype_ == MFVideoFormat_RGB32) {
           if (default_stride == 0) {
             default_stride = width * 4;
           }
@@ -416,40 +458,12 @@ namespace platf {
             default_stride = width * 2;
           }
           video::sws_t next_sws {sws_getContext(
-            width,
-            height,
-            AV_PIX_FMT_YUYV422,
-            width,
-            height,
-            AV_PIX_FMT_BGR0,
-            SWS_FAST_BILINEAR,
-            nullptr,
-            nullptr,
-            nullptr
+            width, height, AV_PIX_FMT_YUYV422,
+            width, height, AV_PIX_FMT_BGR0,
+            SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
           )};
           if (!next_sws) {
             BOOST_LOG(error) << "UVC: failed to initialize YUY2 conversion context"sv;
-            return -1;
-          }
-          sws_ = std::move(next_sws);
-        } else if (subtype_ == MFVideoFormat_NV12) {
-          if (default_stride == 0) {
-            default_stride = width;
-          }
-          video::sws_t next_sws {sws_getContext(
-            width,
-            height,
-            AV_PIX_FMT_NV12,
-            width,
-            height,
-            AV_PIX_FMT_BGR0,
-            SWS_FAST_BILINEAR,
-            nullptr,
-            nullptr,
-            nullptr
-          )};
-          if (!next_sws) {
-            BOOST_LOG(error) << "UVC: failed to initialize NV12 conversion context"sv;
             return -1;
           }
           sws_ = std::move(next_sws);
@@ -472,10 +486,11 @@ namespace platf {
               2000ms
             );
             BOOST_LOG(info) << "UVC: negotiated format "sv << subtype_name(subtype_) << ' ' << width << 'x' << height << '@'
-                            << fps << "fps";
+                            << fps << "fps (passthrough=" << (nv12_passthrough_ ? "yes" : "no") << ')';
           }
         } else {
-          BOOST_LOG(info) << "UVC: negotiated format "sv << subtype_name(subtype_) << ' ' << width << 'x' << height;
+          BOOST_LOG(info) << "UVC: negotiated format "sv << subtype_name(subtype_) << ' ' << width << 'x' << height
+                          << " (passthrough=" << (nv12_passthrough_ ? "yes" : "no") << ')';
         }
 
         return 0;
@@ -530,15 +545,25 @@ namespace platf {
             return capture_e::timeout;
           }
 
-          std::this_thread::sleep_for(1ms);
+          // ReadSample is already blocking; yield briefly only if it returned no sample.
+          SwitchToThread();
         }
       }
 
       int convert_sample(IMFSample *sample, img_t *img) {
+        // Try to get the first buffer directly to avoid a potential copy in ConvertToContiguousBuffer.
+        DWORD buffer_count = 0;
+        sample->GetBufferCount(&buffer_count);
+
         buffer_t buffer;
-        const auto hr = sample->ConvertToContiguousBuffer(&buffer);
+        HRESULT hr;
+        if (buffer_count == 1) {
+          hr = sample->GetBufferByIndex(0, &buffer);
+        } else {
+          hr = sample->ConvertToContiguousBuffer(&buffer);
+        }
         if (FAILED(hr) || !buffer) {
-          BOOST_LOG(error) << "UVC: ConvertToContiguousBuffer failed [0x"sv << util::hex(hr).to_string_view() << ']';
+          BOOST_LOG(error) << "UVC: failed to get media buffer [0x"sv << util::hex(hr).to_string_view() << ']';
           return -1;
         }
 
@@ -556,6 +581,46 @@ namespace platf {
         });
 
         auto *dst = img->data;
+
+        // NV12 passthrough: copy planes directly without color conversion.
+        if (nv12_passthrough_) {
+          const auto src_stride = static_cast<std::size_t>(bytes_per_line_);
+          const auto y_plane_size = src_stride * static_cast<std::size_t>(height);
+          const auto uv_height = static_cast<std::size_t>((height + 1) / 2);
+          const auto uv_plane_size = src_stride * uv_height;
+          if (current_len < y_plane_size + uv_plane_size) {
+            return -1;
+          }
+
+          const auto dst_y_stride = static_cast<std::size_t>(img->row_pitch);
+          const auto line_bytes = static_cast<std::size_t>(width);
+
+          // Copy Y plane
+          if (src_stride == dst_y_stride) {
+            std::memcpy(dst, data, y_plane_size);
+          } else {
+            for (int y = 0; y < height; ++y) {
+              std::memcpy(dst + static_cast<std::size_t>(y) * dst_y_stride,
+                          data + static_cast<std::size_t>(y) * src_stride,
+                          line_bytes);
+            }
+          }
+
+          // Copy UV plane
+          auto *uv_dst = dst + img->uv_offset;
+          auto *uv_src = data + y_plane_size;
+          const auto dst_uv_stride = static_cast<std::size_t>(img->uv_pitch);
+          if (src_stride == dst_uv_stride) {
+            std::memcpy(uv_dst, uv_src, uv_plane_size);
+          } else {
+            for (std::size_t y = 0; y < uv_height; ++y) {
+              std::memcpy(uv_dst + y * dst_uv_stride, uv_src + y * src_stride, line_bytes);
+            }
+          }
+
+          return 0;
+        }
+
         const auto dst_stride = static_cast<std::size_t>(img->row_pitch);
 
         if (subtype_ == MFVideoFormat_RGB32) {
@@ -594,34 +659,6 @@ namespace platf {
           return 0;
         }
 
-        if (subtype_ == MFVideoFormat_NV12) {
-          if (!sws_) {
-            return -1;
-          }
-
-          const auto src_stride = static_cast<int>(bytes_per_line_);
-          const auto y_plane_size = static_cast<std::size_t>(src_stride) * static_cast<std::size_t>(height);
-          const auto uv_plane_size = static_cast<std::size_t>(src_stride) * static_cast<std::size_t>((height + 1) / 2);
-          if (current_len < y_plane_size + uv_plane_size) {
-            return -1;
-          }
-
-          std::array<std::uint8_t *, 4> src_data {
-            data,
-            data + y_plane_size,
-            nullptr,
-            nullptr,
-          };
-          std::array<int, 4> src_linesize {src_stride, src_stride, 0, 0};
-          std::array<std::uint8_t *, 4> dst_data {dst, nullptr, nullptr, nullptr};
-          std::array<int, 4> dst_linesize {img->row_pitch, 0, 0, 0};
-
-          if (sws_scale(sws_.get(), src_data.data(), src_linesize.data(), 0, height, dst_data.data(), dst_linesize.data()) != height) {
-            return -1;
-          }
-          return 0;
-        }
-
         return -1;
       }
 
@@ -639,10 +676,11 @@ namespace platf {
 
       bool co_initialized_ {false};
       reader_t reader_;
-      GUID subtype_ {MFVideoFormat_RGB32};
+      GUID subtype_ {MFVideoFormat_NV12};
       std::uint32_t bytes_per_line_ {0};
       std::chrono::milliseconds read_timeout_ {250ms};
       video::sws_t sws_;
+      bool nv12_passthrough_ {false};
     };
 
     const uvc::device_info_t *find_device(std::string_view display_name, const std::vector<uvc::device_info_t> &devices) {
