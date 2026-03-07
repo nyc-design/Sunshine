@@ -37,7 +37,6 @@ on:
 jobs:
   build_windows:
     name: ${{ matrix.name }}
-    if: ${{ (inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full') || matrix.arch == 'x86_64' }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -46,18 +45,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Windows-AMD64
-            os: windows-2022
-            arch: x86_64
-            msystem: ucrt64
-            toolchain: ucrt-x86_64
-          - name: Windows-ARM64
-            os: windows-11-arm
-            arch: aarch64
-            msystem: clangarm64
-            toolchain: clang-aarch64
+      matrix: ${{ fromJSON((inputs.build_profile == 'full' || github.event.inputs.build_profile == 'full') && '{"include":[{"name":"Windows-AMD64","os":"windows-2022","arch":"x86_64","msystem":"ucrt64","toolchain":"ucrt-x86_64"},{"name":"Windows-ARM64","os":"windows-11-arm","arch":"aarch64","msystem":"clangarm64","toolchain":"clang-aarch64"}]}' || '{"include":[{"name":"Windows-AMD64","os":"windows-2022","arch":"x86_64","msystem":"ucrt64","toolchain":"ucrt-x86_64"}]}') }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
