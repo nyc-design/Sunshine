@@ -86,7 +86,6 @@ jobs:
             "mingw-w64-${TOOLCHAIN}-onevpl"
             "mingw-w64-${TOOLCHAIN}-openssl"
             "mingw-w64-${TOOLCHAIN}-opus"
-            "mingw-w64-${TOOLCHAIN}-toolchain"
           )
 
           if [[ "${BUILD_PROFILE}" == "full" ]]; then
@@ -128,11 +127,18 @@ jobs:
             pacman -U --noconfirm "${tarballs}"
           fi
 
+          # Fast profile avoids full system upgrade (faster and avoids msys2 runtime restart).
+          if [[ "${BUILD_PROFILE}" == "full" ]]; then
+            pacman_install_cmd=(-Syu --noconfirm)
+          else
+            pacman_install_cmd=(-S --noconfirm --needed)
+          fi
+
           # Only add --ignore if we have packages to ignore
           if [ -n "${ignore_list}" ]; then
-            pacman -Syu --noconfirm --ignore="${ignore_list}" "${dependencies[@]}"
+            pacman "${pacman_install_cmd[@]}" --ignore="${ignore_list}" "${dependencies[@]}"
           else
-            pacman -Syu --noconfirm "${dependencies[@]}"
+            pacman "${pacman_install_cmd[@]}" "${dependencies[@]}"
           fi
 
       - name: Install Doxygen
