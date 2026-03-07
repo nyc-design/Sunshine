@@ -85,6 +85,8 @@ const config = ref(props.config)
         <select id="esp32_mode" class="form-select" v-model="config.esp32_mode">
           <option value="gamepad">{{ $t('config.esp32_mode_gamepad') }}</option>
           <option value="switch_controller">{{ $t('config.esp32_mode_switch_controller') }}</option>
+          <option value="wired_switch_pro_controller">{{ $t('config.esp32_mode_wired_switch_pro_controller') }}</option>
+          <option value="switch_wired">{{ $t('config.esp32_mode_switch_wired') }}</option>
         </select>
         <div class="form-text">{{ $t('config.esp32_mode_desc') }}</div>
       </div>
@@ -95,6 +97,8 @@ const config = ref(props.config)
           <option value="auto">{{ $t('config.esp32_delivery_policy_auto') }}</option>
           <option value="wired">{{ $t('config.esp32_delivery_policy_wired') }}</option>
           <option value="bluetooth">{{ $t('config.esp32_delivery_policy_bluetooth') }}</option>
+          <option value="websocket">{{ $t('config.esp32_delivery_policy_websocket') }}</option>
+          <option value="http">{{ $t('config.esp32_delivery_policy_http') }}</option>
         </select>
         <div class="form-text">{{ $t('config.esp32_delivery_policy_desc') }}</div>
       </div>

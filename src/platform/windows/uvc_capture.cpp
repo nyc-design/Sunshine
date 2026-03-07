@@ -246,13 +246,16 @@ namespace platf {
         }
 
         attributes_t reader_attrs;
-        hr = MFCreateAttributes(&reader_attrs, 2);
+        hr = MFCreateAttributes(&reader_attrs, 3);
         if (FAILED(hr)) {
           BOOST_LOG(error) << "UVC: MFCreateAttributes(reader) failed [0x"sv << util::hex(hr).to_string_view() << ']';
           return -1;
         }
         reader_attrs->SetUINT32(MF_READWRITE_DISABLE_CONVERTERS, FALSE);
-        reader_attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+        reader_attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, FALSE);
+#ifdef MF_LOW_LATENCY
+        reader_attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
+#endif
 
         hr = MFCreateSourceReaderFromMediaSource(source.get(), reader_attrs.get(), &reader_);
         if (FAILED(hr) || !reader_) {
@@ -265,35 +268,21 @@ namespace platf {
         }
 
         const auto requested_fps = std::max(1, config.framerate);
-        delay_ = std::chrono::nanoseconds {1s} / requested_fps;
+        const auto nominal_frame = std::chrono::milliseconds {std::max(1, 1000 / requested_fps)};
+        read_timeout_ = std::clamp(nominal_frame * 4, 50ms, 1000ms);
 
         BOOST_LOG(info) << "UVC: capturing from "sv << source_name_ << " ["sv << source_id_ << "] "sv << width << 'x' << height;
         return 0;
       }
 
       capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool * /*cursor*/) override {
-        auto next_frame = std::chrono::steady_clock::now();
-        sleep_overshoot_logger.reset();
-
         while (true) {
-          const auto now = std::chrono::steady_clock::now();
-          if (next_frame > now) {
-            std::this_thread::sleep_for(next_frame - now);
-            sleep_overshoot_logger.first_point(next_frame);
-            sleep_overshoot_logger.second_point_now_and_log();
-          }
-
-          next_frame += delay_;
-          if (next_frame < now) {
-            next_frame = now + delay_;
-          }
-
           std::shared_ptr<img_t> img_out;
           if (!pull_free_image_cb(img_out)) {
             return capture_e::interrupted;
           }
 
-          auto status = capture_frame(img_out.get(), 1000ms);
+          auto status = capture_frame(img_out.get(), read_timeout_);
           switch (status) {
             case capture_e::ok:
               if (!push_captured_image_cb(std::move(img_out), true)) {
@@ -594,7 +583,7 @@ namespace platf {
       reader_t reader_;
       GUID subtype_ {MFVideoFormat_RGB32};
       std::uint32_t bytes_per_line_ {0};
-      std::chrono::nanoseconds delay_ {16666666ns};
+      std::chrono::milliseconds read_timeout_ {250ms};
     };
 
     const uvc::device_info_t *find_device(std::string_view display_name, const std::vector<uvc::device_info_t> &devices) {

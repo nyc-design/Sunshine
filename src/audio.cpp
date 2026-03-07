@@ -157,40 +157,47 @@ namespace audio {
       return;
     }
 
-    // Order of priority:
-    // 1. Virtual sink
-    // 2. Audio sink
-    // 3. Host
-    std::string *sink = &ref->sink.host;
-    if (!config::audio.sink.empty()) {
-      sink = &config::audio.sink;
-    }
-
-    // Prefer the virtual sink if host playback is disabled or there's no other sink
-    if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
-      auto &null = *ref->sink.null;
-      switch (stream.channelCount) {
-        case 2:
-          sink = &null.stereo;
-          break;
-        case 6:
-          sink = &null.surround51;
-          break;
-        case 8:
-          sink = &null.surround71;
-          break;
+    const bool uvc_audio_capture_mode = config::video.capture == "uvc";
+    if (!uvc_audio_capture_mode) {
+      // Order of priority:
+      // 1. Virtual sink
+      // 2. Audio sink
+      // 3. Host
+      std::string *sink = &ref->sink.host;
+      if (!config::audio.sink.empty()) {
+        sink = &config::audio.sink;
       }
-    }
 
-    // Only the first to start a session may change the default sink
-    if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
-      // If the selected sink is different than the current one, change sinks.
-      ref->restore_sink = ref->sink.host != *sink;
-      if (ref->restore_sink) {
-        if (control->set_sink(*sink)) {
-          return;
+      // Prefer the virtual sink if host playback is disabled or there's no other sink
+      if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
+        auto &null = *ref->sink.null;
+        switch (stream.channelCount) {
+          case 2:
+            sink = &null.stereo;
+            break;
+          case 6:
+            sink = &null.surround51;
+            break;
+          case 8:
+            sink = &null.surround71;
+            break;
         }
       }
+
+      // Only the first to start a session may change the default sink
+      if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
+        // If the selected sink is different than the current one, change sinks.
+        ref->restore_sink = ref->sink.host != *sink;
+        if (ref->restore_sink) {
+          if (control->set_sink(*sink)) {
+            return;
+          }
+        }
+      }
+    } else {
+      // In UVC capture mode we want audio from the selected input endpoint,
+      // not loopback from the host render sink.
+      ref->restore_sink = false;
     }
 
     auto frame_size = config.packetDuration * stream.sampleRate / 1000;

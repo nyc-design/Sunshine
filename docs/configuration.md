@@ -790,13 +790,21 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="2">Choices</td>
+        <td rowspan="4">Choices</td>
         <td>gamepad</td>
         <td>Use the ESP32 generic gamepad mapping.</td>
     </tr>
     <tr>
         <td>switch_controller</td>
-        <td>Use the ESP32 Nintendo Switch controller mapping.</td>
+        <td>Use the ESP32 Nintendo Switch Bluetooth controller mapping.</td>
+    </tr>
+    <tr>
+        <td>wired_switch_pro_controller</td>
+        <td>Use the ESP32 Nintendo Switch wired USB Pro Controller mapping.</td>
+    </tr>
+    <tr>
+        <td>switch_wired</td>
+        <td>Alias of @code{}wired_switch_pro_controller@endcode.</td>
     </tr>
 </table>
 
@@ -806,7 +814,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Output delivery policy sent to ESP32 at stream start when using @code{}controller_transport = esp32@endcode.
+            Input source policy sent to ESP32 at stream start when using @code{}controller_transport = esp32@endcode.
+            Sunshine sends both @code{}set_delivery_policy@endcode (legacy) and @code{}set_input_policy@endcode (current firmware naming).
         </td>
     </tr>
     <tr>
@@ -822,17 +831,25 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="5">Choices</td>
         <td>auto</td>
-        <td>Use wired output when available, otherwise use Bluetooth.</td>
+        <td>Use firmware default source-priority behavior.</td>
     </tr>
     <tr>
         <td>wired</td>
-        <td>Force wired USB output mode.</td>
+        <td>Accept only wired serial command input.</td>
     </tr>
     <tr>
         <td>bluetooth</td>
-        <td>Force Bluetooth output mode.</td>
+        <td>Legacy alias; translated to @code{}websocket@endcode for current firmware.</td>
+    </tr>
+    <tr>
+        <td>websocket</td>
+        <td>Accept only WebSocket command input.</td>
+    </tr>
+    <tr>
+        <td>http</td>
+        <td>Accept only HTTP command input.</td>
     </tr>
 </table>
 
@@ -2223,6 +2240,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>uvc</td>
         <td>Capture from a UVC capture card (for example HDMI/USB capture dongles) as the video source.
+            On Windows, audio capture in this mode uses input endpoints (default recording device, or @code{}audio_sink@endcode if set to a capture endpoint id/name).
             @note{Applies to Linux and Windows.}</td>
     </tr>
     <tr>

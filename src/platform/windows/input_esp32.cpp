@@ -5,6 +5,7 @@
 
 // standard includes
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 
 // platform includes
@@ -40,6 +41,22 @@ namespace platf::esp32 {
 
     std::string to_json_line(const nlohmann::json &payload) {
       return payload.dump() + "\n";
+    }
+
+    std::string normalized_input_policy(std::string policy) {
+      std::transform(policy.begin(), policy.end(), policy.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+      });
+
+      // Backward compatibility with old config wording.
+      if (policy == "bluetooth"sv || policy == "bt"sv) {
+        return "websocket"s;
+      }
+      if (policy == "wifi"sv) {
+        return "http"s;
+      }
+
+      return policy;
     }
   }  // namespace
 
@@ -84,6 +101,14 @@ namespace platf::esp32 {
       nlohmann::json payload {
         {"action", "set_delivery_policy"},
         {"delivery_policy", delivery_policy_},
+      };
+      enqueue_command(to_json_line(payload));
+    }
+
+    if (!delivery_policy_.empty()) {
+      nlohmann::json payload {
+        {"action", "set_input_policy"},
+        {"input_policy", normalized_input_policy(delivery_policy_)},
       };
       enqueue_command(to_json_line(payload));
     }

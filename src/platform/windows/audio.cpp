@@ -5,6 +5,7 @@
 #define INITGUID
 
 // standard includes
+#include <cwchar>
 #include <format>
 
 // platform includes
@@ -276,7 +277,7 @@ namespace platf::audio {
     },
   };
 
-  audio_client_t make_audio_client(device_t &device, const format_t &format) {
+  audio_client_t make_audio_client(device_t &device, const format_t &format, bool loopback_capture) {
     audio_client_t audio_client;
     auto status = device->Activate(
       IID_IAudioClient,
@@ -315,10 +316,16 @@ namespace platf::audio {
                       << ((mixer_waveformat->nSamplesPerSec != 48000) ? "will be resampled to 48000 by Windows"sv : "no resampling needed"sv);
     }
 
+    DWORD stream_flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+                         AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+                         AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    if (loopback_capture) {
+      stream_flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
+    }
+
     status = audio_client->Initialize(
       AUDCLNT_SHAREMODE_SHARED,
-      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
-        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,  // Enable automatic resampling to 48 KHz
+      stream_flags,  // Enable automatic resampling to 48 KHz
       0,
       0,
       (LPWAVEFORMATEX) &capture_waveformat,
@@ -335,12 +342,12 @@ namespace platf::audio {
     return audio_client;
   }
 
-  device_t default_device(device_enum_t &device_enum) {
+  device_t default_device(device_enum_t &device_enum, EDataFlow flow = eRender, ERole role = eConsole) {
     device_t device;
     HRESULT status;
     status = device_enum->GetDefaultAudioEndpoint(
-      eRender,
-      eConsole,
+      flow,
+      role,
       &device
     );
 
@@ -351,6 +358,59 @@ namespace platf::audio {
     }
 
     return device;
+  }
+
+  device_t find_device(device_enum_t &device_enum, EDataFlow flow, const std::wstring &query) {
+    if (query.empty()) {
+      return nullptr;
+    }
+
+    collection_t collection;
+    auto status = device_enum->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &collection);
+    if (FAILED(status) || !collection) {
+      return nullptr;
+    }
+
+    UINT count = 0;
+    collection->GetCount(&count);
+
+    for (UINT i = 0; i < count; ++i) {
+      device_t device;
+      if (FAILED(collection->Item(i, &device)) || !device) {
+        continue;
+      }
+
+      wstring_t id;
+      device->GetId(&id);
+      const std::wstring device_id = id ? id.get() : L"";
+      if (device_id == query) {
+        return device;
+      }
+
+      prop_t prop;
+      if (FAILED(device->OpenPropertyStore(STGM_READ, &prop)) || !prop) {
+        continue;
+      }
+
+      prop_var_t adapter_friendly_name;
+      prop_var_t device_friendly_name;
+      prop_var_t device_desc;
+      prop->GetValue(PKEY_Device_FriendlyName, &device_friendly_name.prop);
+      prop->GetValue(PKEY_DeviceInterface_FriendlyName, &adapter_friendly_name.prop);
+      prop->GetValue(PKEY_Device_DeviceDesc, &device_desc.prop);
+
+      const auto equals = [&](const wchar_t *value) {
+        return value && std::wcscmp(value, query.c_str()) == 0;
+      };
+
+      if (equals(device_friendly_name.prop.pwszVal) ||
+          equals(adapter_friendly_name.prop.pwszVal) ||
+          equals(device_desc.prop.pwszVal)) {
+        return device;
+      }
+    }
+
+    return nullptr;
   }
 
   class audio_notification_t: public ::IMMNotificationClient {
@@ -384,7 +444,7 @@ namespace platf::audio {
 
     // IMMNotificationClient
     HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR pwstrDeviceId) {
-      if (flow == eRender) {
+      if (flow == monitored_flow) {
         default_render_device_changed_flag.store(true);
       }
       return S_OK;
@@ -421,7 +481,13 @@ namespace platf::audio {
     }
 
   private:
+    EDataFlow monitored_flow {eRender};
     std::atomic_bool default_render_device_changed_flag;
+
+  public:
+    void set_monitored_flow(EDataFlow flow) {
+      monitored_flow = flow;
+    }
   };
 
   class mic_wasapi_t: public mic_t {
@@ -475,6 +541,10 @@ namespace platf::audio {
         return -1;
       }
 
+      bool uvc_audio_capture_mode = (config::video.capture == "uvc"sv);
+      auto endpoint_flow = uvc_audio_capture_mode ? eCapture : eRender;
+
+      endpt_notification.set_monitored_flow(endpoint_flow);
       status = device_enum->RegisterEndpointNotificationCallback(&endpt_notification);
       if (FAILED(status)) {
         BOOST_LOG(error) << "Couldn't register endpoint notification [0x"sv << util::hex(status).to_string_view() << ']';
@@ -482,7 +552,27 @@ namespace platf::audio {
         return -1;
       }
 
-      auto device = default_device(device_enum);
+      device_t device;
+      if (uvc_audio_capture_mode && !config::audio.sink.empty()) {
+        device = find_device(device_enum, eCapture, utf_utils::from_utf8(config::audio.sink));
+        if (!device) {
+          BOOST_LOG(warning) << "Couldn't find requested UVC audio capture endpoint ["sv << config::audio.sink << "], falling back to default input device"sv;
+        }
+      }
+
+      if (!device) {
+        device = default_device(device_enum, endpoint_flow);
+      }
+
+      bool loopback_capture = endpoint_flow == eRender;
+      if (!device && endpoint_flow == eCapture) {
+        BOOST_LOG(warning) << "No capture endpoint available for UVC audio, falling back to default render loopback"sv;
+        endpoint_flow = eRender;
+        endpt_notification.set_monitored_flow(endpoint_flow);
+        loopback_capture = true;
+        device = default_device(device_enum, endpoint_flow);
+      }
+
       if (!device) {
         return -1;
       }
@@ -495,7 +585,7 @@ namespace platf::audio {
         }
 
         BOOST_LOG(debug) << "Trying audio format ["sv << format.name << ']';
-        audio_client = make_audio_client(device, format);
+        audio_client = make_audio_client(device, format, loopback_capture);
 
         if (audio_client) {
           BOOST_LOG(debug) << "Found audio format ["sv << format.name << ']';

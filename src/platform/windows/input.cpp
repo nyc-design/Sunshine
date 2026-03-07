@@ -8,8 +8,11 @@
 #include <Windows.h>
 
 // standard includes
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -134,43 +137,78 @@ namespace platf {
       .sPreviousTouch = {ds4_touch_unused, ds4_touch_unused}}}
   };
 
-  constexpr std::uint32_t ESP32_DIGITAL_BUTTON_MASK = START | BACK | LEFT_STICK | RIGHT_STICK | LEFT_BUTTON | RIGHT_BUTTON | HOME | A | B | X | Y;
+  constexpr std::uint32_t ESP32_DIGITAL_BUTTON_MASK = START | BACK | LEFT_STICK | RIGHT_STICK | LEFT_BUTTON | RIGHT_BUTTON | HOME | MISC_BUTTON | A | B | X | Y;
 
   struct esp32_mapped_button_t {
     std::uint32_t mask;
-    std::string_view name;
+    std::string_view generic_name;
+    std::string_view switch_name;
   };
 
   constexpr std::array ESP32_MAPPED_BUTTONS {
-    esp32_mapped_button_t {A, "A"sv},
-    esp32_mapped_button_t {B, "B"sv},
-    esp32_mapped_button_t {X, "X"sv},
-    esp32_mapped_button_t {Y, "Y"sv},
-    esp32_mapped_button_t {LEFT_BUTTON, "LB"sv},
-    esp32_mapped_button_t {RIGHT_BUTTON, "RB"sv},
-    esp32_mapped_button_t {START, "start"sv},
-    esp32_mapped_button_t {BACK, "select"sv},
-    esp32_mapped_button_t {LEFT_STICK, "lstick"sv},
-    esp32_mapped_button_t {RIGHT_STICK, "rstick"sv},
-    esp32_mapped_button_t {HOME, "home"sv},
+    esp32_mapped_button_t {A, "A"sv, "B"sv},
+    esp32_mapped_button_t {B, "B"sv, "A"sv},
+    esp32_mapped_button_t {X, "X"sv, "Y"sv},
+    esp32_mapped_button_t {Y, "Y"sv, "X"sv},
+    esp32_mapped_button_t {LEFT_BUTTON, "LB"sv, "L"sv},
+    esp32_mapped_button_t {RIGHT_BUTTON, "RB"sv, "R"sv},
+    esp32_mapped_button_t {START, "start"sv, "plus"sv},
+    esp32_mapped_button_t {BACK, "select"sv, "minus"sv},
+    esp32_mapped_button_t {LEFT_STICK, "lstick"sv, "L3"sv},
+    esp32_mapped_button_t {RIGHT_STICK, "rstick"sv, "R3"sv},
+    esp32_mapped_button_t {HOME, "home"sv, "home"sv},
+    esp32_mapped_button_t {MISC_BUTTON, "capture"sv, "capture"sv},
   };
+
+  bool esp32_switch_mode_enabled() {
+    std::string mode = config::input.esp32_mode;
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return mode.find("switch"sv) != std::string::npos;
+  }
+
+  std::string_view esp32_button_name(const esp32_mapped_button_t &button) {
+    return esp32_switch_mode_enabled() ? button.switch_name : button.generic_name;
+  }
+
+  std::string_view esp32_left_trigger_name() {
+    return esp32_switch_mode_enabled() ? "ZL"sv : "LT"sv;
+  }
+
+  std::string_view esp32_right_trigger_name() {
+    return esp32_switch_mode_enabled() ? "ZR"sv : "RT"sv;
+  }
+
+  std::int16_t esp32_quantize_axis(std::int16_t value) {
+    constexpr int deadzone = 384;
+    constexpr int step = 256;
+
+    if (std::abs(static_cast<int>(value)) <= deadzone) {
+      return 0;
+    }
+
+    int q = (static_cast<int>(value) / step) * step;
+    q = std::clamp(q, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
+    return static_cast<std::int16_t>(q);
+  }
 
   void release_all_esp32_buttons(esp32::serial_client_t &serial, const esp32_gamepad_state_t &state) {
     if (!state.has_state) {
       return;
     }
 
-    for (const auto &[mask, name] : ESP32_MAPPED_BUTTONS) {
-      if (state.last_state.buttonFlags & mask) {
-        serial.send_button(name, false);
+    for (const auto &button : ESP32_MAPPED_BUTTONS) {
+      if (state.last_state.buttonFlags & button.mask) {
+        serial.send_button(esp32_button_name(button), false);
       }
     }
 
     if (esp32::trigger_pressed(state.last_state.lt)) {
-      serial.send_button("LT", false);
+      serial.send_button(esp32_left_trigger_name(), false);
     }
     if (esp32::trigger_pressed(state.last_state.rt)) {
-      serial.send_button("RT", false);
+      serial.send_button(esp32_right_trigger_name(), false);
     }
 
     serial.send_hat("center");
@@ -1579,45 +1617,51 @@ namespace platf {
         return;
       }
 
+      auto normalized_state = gamepad_state;
+      normalized_state.lsX = esp32_quantize_axis(normalized_state.lsX);
+      normalized_state.lsY = esp32_quantize_axis(normalized_state.lsY);
+      normalized_state.rsX = esp32_quantize_axis(normalized_state.rsX);
+      normalized_state.rsY = esp32_quantize_axis(normalized_state.rsY);
+
       const auto previous_state = state.last_state;
       const auto previous_hat = state.last_hat_direction;
 
-      const auto changed_mask = (previous_state.buttonFlags ^ gamepad_state.buttonFlags) & ESP32_DIGITAL_BUTTON_MASK;
-      for (const auto &[mask, name] : ESP32_MAPPED_BUTTONS) {
-        if (!(changed_mask & mask)) {
+      const auto changed_mask = (previous_state.buttonFlags ^ normalized_state.buttonFlags) & ESP32_DIGITAL_BUTTON_MASK;
+      for (const auto &button : ESP32_MAPPED_BUTTONS) {
+        if (!(changed_mask & button.mask)) {
           continue;
         }
 
-        const bool pressed = gamepad_state.buttonFlags & mask;
-        raw->esp32->send_button(name, pressed);
+        const bool pressed = normalized_state.buttonFlags & button.mask;
+        raw->esp32->send_button(esp32_button_name(button), pressed);
       }
 
       const bool previous_lt = esp32::trigger_pressed(previous_state.lt);
-      const bool current_lt = esp32::trigger_pressed(gamepad_state.lt);
+      const bool current_lt = esp32::trigger_pressed(normalized_state.lt);
       if (previous_lt != current_lt) {
-        raw->esp32->send_button("LT", current_lt);
+        raw->esp32->send_button(esp32_left_trigger_name(), current_lt);
       }
 
       const bool previous_rt = esp32::trigger_pressed(previous_state.rt);
-      const bool current_rt = esp32::trigger_pressed(gamepad_state.rt);
+      const bool current_rt = esp32::trigger_pressed(normalized_state.rt);
       if (previous_rt != current_rt) {
-        raw->esp32->send_button("RT", current_rt);
+        raw->esp32->send_button(esp32_right_trigger_name(), current_rt);
       }
 
-      const auto current_hat = esp32::dpad_direction(gamepad_state.buttonFlags);
+      const auto current_hat = esp32::dpad_direction(normalized_state.buttonFlags);
       if (!state.has_state || current_hat != previous_hat) {
         raw->esp32->send_hat(current_hat);
         state.last_hat_direction = current_hat;
       }
 
-      if (!state.has_state || previous_state.lsX != gamepad_state.lsX || previous_state.lsY != gamepad_state.lsY) {
-        raw->esp32->send_stick("left", gamepad_state.lsX, gamepad_state.lsY);
+      if (!state.has_state || previous_state.lsX != normalized_state.lsX || previous_state.lsY != normalized_state.lsY) {
+        raw->esp32->send_stick("left", normalized_state.lsX, normalized_state.lsY);
       }
-      if (!state.has_state || previous_state.rsX != gamepad_state.rsX || previous_state.rsY != gamepad_state.rsY) {
-        raw->esp32->send_stick("right", gamepad_state.rsX, gamepad_state.rsY);
+      if (!state.has_state || previous_state.rsX != normalized_state.rsX || previous_state.rsY != normalized_state.rsY) {
+        raw->esp32->send_stick("right", normalized_state.rsX, normalized_state.rsY);
       }
 
-      state.last_state = gamepad_state;
+      state.last_state = normalized_state;
       state.has_state = true;
       return;
     }
