@@ -137,74 +137,11 @@ namespace platf {
       .sPreviousTouch = {ds4_touch_unused, ds4_touch_unused}}}
   };
 
-  constexpr std::uint32_t ESP32_DIGITAL_BUTTON_MASK = START | BACK | LEFT_STICK | RIGHT_STICK | LEFT_BUTTON | RIGHT_BUTTON | HOME | MISC_BUTTON | A | B | X | Y;
+  // Button mapping, axis quantization, and diff tracking are no longer needed —
+  // the binary PABB protocol sends complete controller state in every packet.
 
-  struct esp32_mapped_button_t {
-    std::uint32_t mask;
-    std::string_view name;
-  };
-
-  constexpr std::array ESP32_MAPPED_BUTTONS {
-    esp32_mapped_button_t {A, "A"sv},
-    esp32_mapped_button_t {B, "B"sv},
-    esp32_mapped_button_t {X, "X"sv},
-    esp32_mapped_button_t {Y, "Y"sv},
-    esp32_mapped_button_t {LEFT_BUTTON, "LB"sv},
-    esp32_mapped_button_t {RIGHT_BUTTON, "RB"sv},
-    esp32_mapped_button_t {START, "start"sv},
-    esp32_mapped_button_t {BACK, "select"sv},
-    esp32_mapped_button_t {LEFT_STICK, "lstick"sv},
-    esp32_mapped_button_t {RIGHT_STICK, "rstick"sv},
-    esp32_mapped_button_t {HOME, "home"sv},
-    esp32_mapped_button_t {MISC_BUTTON, "capture"sv},
-  };
-
-  std::string_view esp32_button_name(const esp32_mapped_button_t &button) {
-    return button.name;
-  }
-
-  std::string_view esp32_left_trigger_name() {
-    return "LT"sv;
-  }
-
-  std::string_view esp32_right_trigger_name() {
-    return "RT"sv;
-  }
-
-  std::int16_t esp32_quantize_axis(std::int16_t value) {
-    constexpr int deadzone = 384;
-    constexpr int step = 256;
-
-    if (std::abs(static_cast<int>(value)) <= deadzone) {
-      return 0;
-    }
-
-    int q = (static_cast<int>(value) / step) * step;
-    q = std::clamp(q, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
-    return static_cast<std::int16_t>(q);
-  }
-
-  void release_all_esp32_buttons(esp32::serial_client_t &serial, const esp32_gamepad_state_t &state) {
-    if (!state.has_state) {
-      return;
-    }
-
-    for (const auto &button : ESP32_MAPPED_BUTTONS) {
-      if (state.last_state.buttonFlags & button.mask) {
-        serial.send_button(esp32_button_name(button), false);
-      }
-    }
-
-    if (esp32::trigger_pressed(state.last_state.lt)) {
-      serial.send_button(esp32_left_trigger_name(), false);
-    }
-    if (esp32::trigger_pressed(state.last_state.rt)) {
-      serial.send_button(esp32_right_trigger_name(), false);
-    }
-
-    serial.send_hat("center");
-    serial.send_stick("left", 0, 0);
-    serial.send_stick("right", 0, 0);
+  void release_all_esp32_buttons(esp32::serial_client_t &serial, const esp32_gamepad_state_t & /*state*/) {
+    serial.send_neutral_state();
   }
 
   /**
@@ -1608,52 +1545,13 @@ namespace platf {
         return;
       }
 
-      auto normalized_state = gamepad_state;
-      normalized_state.lsX = esp32_quantize_axis(normalized_state.lsX);
-      normalized_state.lsY = esp32_quantize_axis(normalized_state.lsY);
-      normalized_state.rsX = esp32_quantize_axis(normalized_state.rsX);
-      normalized_state.rsY = esp32_quantize_axis(normalized_state.rsY);
-
-      const auto previous_state = state.last_state;
-      const auto previous_hat = state.last_hat_direction;
-
-      const auto changed_mask = (previous_state.buttonFlags ^ normalized_state.buttonFlags) & ESP32_DIGITAL_BUTTON_MASK;
-      for (const auto &button : ESP32_MAPPED_BUTTONS) {
-        if (!(changed_mask & button.mask)) {
-          continue;
-        }
-
-        const bool pressed = normalized_state.buttonFlags & button.mask;
-        raw->esp32->send_button(esp32_button_name(button), pressed);
-      }
-
-      const bool previous_lt = esp32::trigger_pressed(previous_state.lt);
-      const bool current_lt = esp32::trigger_pressed(normalized_state.lt);
-      if (previous_lt != current_lt) {
-        raw->esp32->send_button(esp32_left_trigger_name(), current_lt);
-      }
-
-      const bool previous_rt = esp32::trigger_pressed(previous_state.rt);
-      const bool current_rt = esp32::trigger_pressed(normalized_state.rt);
-      if (previous_rt != current_rt) {
-        raw->esp32->send_button(esp32_right_trigger_name(), current_rt);
-      }
-
-      const auto current_hat = esp32::dpad_direction(normalized_state.buttonFlags);
-      if (!state.has_state || current_hat != previous_hat) {
-        raw->esp32->send_hat(current_hat);
-        state.last_hat_direction = current_hat;
-      }
-
-      if (!state.has_state || previous_state.lsX != normalized_state.lsX || previous_state.lsY != normalized_state.lsY) {
-        raw->esp32->send_stick("left", normalized_state.lsX, normalized_state.lsY);
-      }
-      if (!state.has_state || previous_state.rsX != normalized_state.rsX || previous_state.rsY != normalized_state.rsY) {
-        raw->esp32->send_stick("right", normalized_state.rsX, normalized_state.rsY);
-      }
-
-      state.last_state = normalized_state;
-      state.has_state = true;
+      // Send complete controller state as a single binary PABB packet.
+      // The binary protocol handles button layout mapping (Nintendo swap)
+      // and axis conversion internally — no diff tracking needed.
+      raw->esp32->send_state(
+        gamepad_state.buttonFlags, gamepad_state.lt, gamepad_state.rt,
+        gamepad_state.lsX, gamepad_state.lsY, gamepad_state.rsX, gamepad_state.rsY
+      );
       return;
     }
 

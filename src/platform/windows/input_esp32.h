@@ -1,6 +1,9 @@
 /**
  * @file src/platform/windows/input_esp32.h
  * @brief Declarations for ESP32 serial controller transport on Windows.
+ *
+ * Uses the PABB (Pokémon Automation Bot-Base) binary protocol for controller
+ * state updates (19-byte packets), with JSON used only for initial mode setup.
  */
 #pragma once
 
@@ -10,7 +13,6 @@
 #include <deque>
 #include <mutex>
 #include <string>
-#include <string_view>
 #include <thread>
 
 namespace platf::esp32 {
@@ -23,23 +25,36 @@ namespace platf::esp32 {
     serial_client_t &operator=(const serial_client_t &) = delete;
 
     void send_mode_init();
-    void send_button(std::string_view button, bool pressed);
-    void send_stick(std::string_view stick_id, std::int16_t x, std::int16_t y);
-    void send_hat(std::string_view direction);
+
+    /**
+     * @brief Send complete controller state as a PABB binary packet.
+     * @param button_flags Moonlight button bitmask (platf:: constants).
+     * @param lt Left trigger (0-255).
+     * @param rt Right trigger (0-255).
+     * @param lsX Left stick X (-32768 to 32767).
+     * @param lsY Left stick Y (-32768 to 32767).
+     * @param rsX Right stick X (-32768 to 32767).
+     * @param rsY Right stick Y (-32768 to 32767).
+     */
+    void send_state(std::uint32_t button_flags, std::uint8_t lt, std::uint8_t rt,
+                    std::int16_t lsX, std::int16_t lsY, std::int16_t rsX, std::int16_t rsY);
+
+    void send_neutral_state();
 
   private:
-    struct pending_stick_t {
-      std::int16_t x {0};
-      std::int16_t y {0};
+    struct pabb_state_t {
+      std::uint8_t buttons0 {0};
+      std::uint8_t buttons1 {0};
+      std::uint8_t dpad {8};  // centered
+      std::uint8_t lx {0x80}, ly {0x80};
+      std::uint8_t rx {0x80}, ry {0x80};
       bool dirty {false};
     };
 
-    void enqueue_command(const std::string &line);
-    void enqueue_hat(std::string_view direction);
-    void enqueue_stick(std::string_view stick_id, std::int16_t x, std::int16_t y);
     void writer_loop();
     bool ensure_open();
     void close_port();
+    std::string build_pabb_packet(const pabb_state_t &state);
 
     std::string port_;
     int baud_;
@@ -49,15 +64,10 @@ namespace platf::esp32 {
     void *handle_ {nullptr};
     bool running_ {false};
     std::thread *worker_ {nullptr};
-    std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
-    std::deque<std::string> queue_;
-    std::string pending_hat_ {"center"};
-    bool pending_hat_dirty_ {false};
-    pending_stick_t pending_left_;
-    pending_stick_t pending_right_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<std::string> queue_;  // JSON commands (mode init only)
+    pabb_state_t state_;
+    std::uint32_t seq_ {0};
   };
-
-  std::string dpad_direction(std::uint32_t button_flags);
-  bool trigger_pressed(std::uint8_t value);
 }  // namespace platf::esp32

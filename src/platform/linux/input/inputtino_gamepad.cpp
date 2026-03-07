@@ -4,10 +4,6 @@
  */
 // lib includes
 #include <algorithm>
-#include <array>
-#include <cctype>
-#include <cmath>
-#include <limits>
 #include <boost/locale.hpp>
 #include <inputtino/input.hpp>
 #include <libevdev/libevdev.h>
@@ -24,74 +20,11 @@ using namespace std::literals;
 
 namespace platf::gamepad {
   namespace {
-    constexpr std::uint32_t DIGITAL_BUTTON_MASK = START | BACK | LEFT_STICK | RIGHT_STICK | LEFT_BUTTON | RIGHT_BUTTON | HOME | MISC_BUTTON | A | B | X | Y;
-
-    struct mapped_button_t {
-      std::uint32_t mask;
-      std::string_view name;
-    };
-
-    constexpr std::array mapped_buttons {
-      mapped_button_t {A, "A"sv},
-      mapped_button_t {B, "B"sv},
-      mapped_button_t {X, "X"sv},
-      mapped_button_t {Y, "Y"sv},
-      mapped_button_t {LEFT_BUTTON, "LB"sv},
-      mapped_button_t {RIGHT_BUTTON, "RB"sv},
-      mapped_button_t {START, "start"sv},
-      mapped_button_t {BACK, "select"sv},
-      mapped_button_t {LEFT_STICK, "lstick"sv},
-      mapped_button_t {RIGHT_STICK, "rstick"sv},
-      mapped_button_t {HOME, "home"sv},
-      mapped_button_t {MISC_BUTTON, "capture"sv},
-    };
-
-    std::string_view esp32_button_name(const mapped_button_t &button) {
-      return button.name;
-    }
-
-    std::string_view esp32_left_trigger_name() {
-      return "LT"sv;
-    }
-
-    std::string_view esp32_right_trigger_name() {
-      return "RT"sv;
-    }
-
-    std::int16_t esp32_quantize_axis(std::int16_t value) {
-      constexpr int deadzone = 384;
-      constexpr int step = 256;
-
-      if (std::abs(static_cast<int>(value)) <= deadzone) {
-        return 0;
-      }
-
-      int q = (static_cast<int>(value) / step) * step;
-      q = std::clamp(q, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
-      return static_cast<std::int16_t>(q);
-    }
-
-    void release_all_esp32_buttons(input_raw_t *raw, const joypad_state &state) {
-      if (!raw || !raw->esp32 || !state.has_state) {
+    void release_all_esp32_buttons(input_raw_t *raw) {
+      if (!raw || !raw->esp32) {
         return;
       }
-
-      for (const auto &button : mapped_buttons) {
-        if (state.last_state.buttonFlags & button.mask) {
-          raw->esp32->send_button(esp32_button_name(button), false);
-        }
-      }
-
-      if (esp32::trigger_pressed(state.last_state.lt)) {
-        raw->esp32->send_button(esp32_left_trigger_name(), false);
-      }
-      if (esp32::trigger_pressed(state.last_state.rt)) {
-        raw->esp32->send_button(esp32_right_trigger_name(), false);
-      }
-
-      raw->esp32->send_hat("center");
-      raw->esp32->send_stick("left", 0, 0);
-      raw->esp32->send_stick("right", 0, 0);
+      raw->esp32->send_neutral_state();
     }
   }  // namespace
 
@@ -271,7 +204,7 @@ namespace platf::gamepad {
   void free(input_raw_t *raw, int nr) {
     if (config::input.controller_transport == "esp32"sv) {
       if (raw->gamepads[nr]) {
-        release_all_esp32_buttons(raw, *raw->gamepads[nr]);
+        release_all_esp32_buttons(raw);
       }
       raw->gamepads[nr].reset();
       return;
@@ -293,52 +226,10 @@ namespace platf::gamepad {
         return;
       }
 
-      auto normalized_state = gamepad_state;
-      normalized_state.lsX = esp32_quantize_axis(normalized_state.lsX);
-      normalized_state.lsY = esp32_quantize_axis(normalized_state.lsY);
-      normalized_state.rsX = esp32_quantize_axis(normalized_state.rsX);
-      normalized_state.rsY = esp32_quantize_axis(normalized_state.rsY);
-
-      const auto previous_state = gamepad->last_state;
-      const auto previous_hat = gamepad->last_hat_direction;
-
-      const auto changed_mask = (previous_state.buttonFlags ^ normalized_state.buttonFlags) & DIGITAL_BUTTON_MASK;
-      for (const auto &button : mapped_buttons) {
-        if (!(changed_mask & button.mask)) {
-          continue;
-        }
-
-        const bool pressed = normalized_state.buttonFlags & button.mask;
-        raw->esp32->send_button(esp32_button_name(button), pressed);
-      }
-
-      const bool previous_lt = esp32::trigger_pressed(previous_state.lt);
-      const bool current_lt = esp32::trigger_pressed(normalized_state.lt);
-      if (previous_lt != current_lt) {
-        raw->esp32->send_button(esp32_left_trigger_name(), current_lt);
-      }
-
-      const bool previous_rt = esp32::trigger_pressed(previous_state.rt);
-      const bool current_rt = esp32::trigger_pressed(normalized_state.rt);
-      if (previous_rt != current_rt) {
-        raw->esp32->send_button(esp32_right_trigger_name(), current_rt);
-      }
-
-      const auto current_hat = esp32::dpad_direction(normalized_state.buttonFlags);
-      if (!gamepad->has_state || current_hat != previous_hat) {
-        raw->esp32->send_hat(current_hat);
-        gamepad->last_hat_direction = current_hat;
-      }
-
-      if (!gamepad->has_state || previous_state.lsX != normalized_state.lsX || previous_state.lsY != normalized_state.lsY) {
-        raw->esp32->send_stick("left", normalized_state.lsX, normalized_state.lsY);
-      }
-      if (!gamepad->has_state || previous_state.rsX != normalized_state.rsX || previous_state.rsY != normalized_state.rsY) {
-        raw->esp32->send_stick("right", normalized_state.rsX, normalized_state.rsY);
-      }
-
-      gamepad->last_state = normalized_state;
-      gamepad->has_state = true;
+      raw->esp32->send_state(
+        gamepad_state.buttonFlags, gamepad_state.lt, gamepad_state.rt,
+        gamepad_state.lsX, gamepad_state.lsY, gamepad_state.rsX, gamepad_state.rsY
+      );
       return;
     }
 

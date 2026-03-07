@@ -243,7 +243,28 @@ namespace platf {
       // Event-driven capture: poll waits for the device to deliver a frame.
       // No software rate limiting — the capture card IS the timing source.
       capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool * /*cursor*/) override {
+        // Back-pressure: track the last pushed frame so we can wait for the
+        // encoder to consume it before capturing the next one. Without this,
+        // the video pipeline's single-value event latch silently overwrites
+        // unconsumed frames, causing periodic stuttering (especially during
+        // IDR keyframe encoding which takes longer). V4L2's internal buffer
+        // queues incoming UVC frames while we wait.
+        std::shared_ptr<img_t> last_pushed;
+
         while (true) {
+          // Wait for the encoder to finish with the previous frame.
+          // use_count == 2 means only the pool and our ref remain (encoder is done).
+          if (last_pushed) {
+            auto wait_start = std::chrono::steady_clock::now();
+            while (last_pushed.use_count() > 2) {
+              if (std::chrono::steady_clock::now() - wait_start > 100ms) {
+                break;  // don't stall forever
+              }
+              std::this_thread::yield();
+            }
+            last_pushed.reset();
+          }
+
           std::shared_ptr<img_t> img_out;
           if (!pull_free_image_cb(img_out)) {
             return capture_e::interrupted;
@@ -252,6 +273,7 @@ namespace platf {
           auto status = capture_frame(img_out.get(), 1000ms);
           switch (status) {
             case capture_e::ok:
+              last_pushed = img_out;  // keep ref for back-pressure check
               if (!push_captured_image_cb(std::move(img_out), true)) {
                 return capture_e::ok;
               }
