@@ -246,7 +246,7 @@ namespace platf {
           BOOST_LOG(error) << "UVC: MFCreateAttributes(reader) failed [0x"sv << util::hex(hr).to_string_view() << ']';
           return -1;
         }
-        reader_attrs->SetUINT32(MF_READWRITE_DISABLE_CONVERTERS, FALSE);
+        reader_attrs->SetUINT32(MF_READWRITE_DISABLE_CONVERTERS, TRUE);
         reader_attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, FALSE);
 #ifdef MF_LOW_LATENCY
         reader_attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
@@ -440,8 +440,9 @@ namespace platf {
           default_stride = static_cast<int>(raw_stride);
         }
 
-        // NV12 passthrough: pass raw NV12 data directly to encoder, avoiding double conversion.
-        nv12_passthrough_ = (subtype_ == MFVideoFormat_NV12);
+        // NV12 passthrough: deliver NV12 data to encoder, avoiding double conversion.
+        // Both native NV12 and YUY2 (converted to NV12) use this path.
+        nv12_passthrough_ = (subtype_ == MFVideoFormat_NV12 || subtype_ == MFVideoFormat_YUY2);
 
         if (subtype_ == MFVideoFormat_NV12) {
           if (default_stride == 0) {
@@ -457,13 +458,15 @@ namespace platf {
           if (default_stride == 0) {
             default_stride = width * 2;
           }
+          // Convert YUY2 → NV12 directly (single conversion) instead of
+          // YUY2 → BGR0 → NV12 (double conversion that caused stuttering).
           video::sws_t next_sws {sws_getContext(
             width, height, AV_PIX_FMT_YUYV422,
-            width, height, AV_PIX_FMT_BGR0,
+            width, height, AV_PIX_FMT_NV12,
             SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
           )};
           if (!next_sws) {
-            BOOST_LOG(error) << "UVC: failed to initialize YUY2 conversion context"sv;
+            BOOST_LOG(error) << "UVC: failed to initialize YUY2→NV12 conversion context"sv;
             return -1;
           }
           sws_ = std::move(next_sws);
@@ -582,8 +585,8 @@ namespace platf {
 
         auto *dst = img->data;
 
-        // NV12 passthrough: copy planes directly without color conversion.
-        if (nv12_passthrough_) {
+        // NV12 native: copy planes directly without color conversion.
+        if (subtype_ == MFVideoFormat_NV12) {
           const auto src_stride = static_cast<std::size_t>(bytes_per_line_);
           const auto y_plane_size = src_stride * static_cast<std::size_t>(height);
           const auto uv_height = static_cast<std::size_t>((height + 1) / 2);
@@ -648,10 +651,11 @@ namespace platf {
             return -1;
           }
 
+          // YUY2 → NV12 conversion: output Y plane at dst, UV plane at uv_offset
           std::array<std::uint8_t *, 4> src_data {data, nullptr, nullptr, nullptr};
           std::array<int, 4> src_linesize {src_stride, 0, 0, 0};
-          std::array<std::uint8_t *, 4> dst_data {dst, nullptr, nullptr, nullptr};
-          std::array<int, 4> dst_linesize {img->row_pitch, 0, 0, 0};
+          std::array<std::uint8_t *, 4> dst_data {dst, dst + img->uv_offset, nullptr, nullptr};
+          std::array<int, 4> dst_linesize {img->row_pitch, img->uv_pitch, 0, 0};
 
           if (sws_scale(sws_.get(), src_data.data(), src_linesize.data(), 0, height, dst_data.data(), dst_linesize.data()) != height) {
             return -1;

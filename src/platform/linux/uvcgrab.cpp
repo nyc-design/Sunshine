@@ -414,19 +414,21 @@ namespace platf {
           }
         }
 
-        nv12_passthrough_ = (pixel_format_ == V4L2_PIX_FMT_NV12);
+        // NV12 passthrough: both native NV12 and YUV packed formats (converted to NV12) use this path.
+        nv12_passthrough_ = (pixel_format_ == V4L2_PIX_FMT_NV12 || pixel_format_ == V4L2_PIX_FMT_YUYV || pixel_format_ == V4L2_PIX_FMT_UYVY);
 
-        // Initialize sws_scale for YUV packed formats (SIMD-accelerated).
+        // Convert YUV packed formats directly to NV12 (single conversion) instead of
+        // YUV→BGR0→NV12 (double conversion that causes stuttering).
         if (pixel_format_ == V4L2_PIX_FMT_YUYV) {
-          sws_.reset(sws_getContext(width, height, AV_PIX_FMT_YUYV422, width, height, AV_PIX_FMT_BGR0, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr));
+          sws_.reset(sws_getContext(width, height, AV_PIX_FMT_YUYV422, width, height, AV_PIX_FMT_NV12, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr));
           if (!sws_) {
-            BOOST_LOG(error) << "UVC: failed to initialize YUYV conversion context"sv;
+            BOOST_LOG(error) << "UVC: failed to initialize YUYV→NV12 conversion context"sv;
             return -1;
           }
         } else if (pixel_format_ == V4L2_PIX_FMT_UYVY) {
-          sws_.reset(sws_getContext(width, height, AV_PIX_FMT_UYVY422, width, height, AV_PIX_FMT_BGR0, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr));
+          sws_.reset(sws_getContext(width, height, AV_PIX_FMT_UYVY422, width, height, AV_PIX_FMT_NV12, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr));
           if (!sws_) {
-            BOOST_LOG(error) << "UVC: failed to initialize UYVY conversion context"sv;
+            BOOST_LOG(error) << "UVC: failed to initialize UYVY→NV12 conversion context"sv;
             return -1;
           }
         } else {
@@ -572,8 +574,8 @@ namespace platf {
 
         const auto src_stride = static_cast<std::size_t>(bytes_per_line_);
 
-        // NV12 passthrough: copy planes directly, no color conversion.
-        if (nv12_passthrough_) {
+        // NV12 native: copy planes directly, no color conversion.
+        if (pixel_format_ == V4L2_PIX_FMT_NV12) {
           const auto y_plane_size = src_stride * static_cast<std::size_t>(height);
           const auto uv_height = static_cast<std::size_t>((height + 1) / 2);
           const auto uv_plane_size = src_stride * uv_height;
@@ -622,10 +624,11 @@ namespace platf {
             return -1;
           }
 
+          // YUV → NV12 conversion: output Y plane at dst_base, UV plane at uv_offset
           std::array<const std::uint8_t *, 4> src_data {src, nullptr, nullptr, nullptr};
           std::array<int, 4> src_linesize {static_cast<int>(bytes_per_line_), 0, 0, 0};
-          std::array<std::uint8_t *, 4> dst_data {dst_base, nullptr, nullptr, nullptr};
-          std::array<int, 4> dst_linesize {img->row_pitch, 0, 0, 0};
+          std::array<std::uint8_t *, 4> dst_data {dst_base, dst_base + img->uv_offset, nullptr, nullptr};
+          std::array<int, 4> dst_linesize {img->row_pitch, img->uv_pitch, 0, 0};
 
           if (sws_scale(sws_.get(), src_data.data(), src_linesize.data(), 0, height, dst_data.data(), dst_linesize.data()) != height) {
             return -1;
