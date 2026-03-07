@@ -28,43 +28,34 @@ namespace platf::gamepad {
 
     struct mapped_button_t {
       std::uint32_t mask;
-      std::string_view generic_name;
-      std::string_view switch_name;
+      std::string_view name;
     };
 
     constexpr std::array mapped_buttons {
-      mapped_button_t {A, "A"sv, "B"sv},
-      mapped_button_t {B, "B"sv, "A"sv},
-      mapped_button_t {X, "X"sv, "Y"sv},
-      mapped_button_t {Y, "Y"sv, "X"sv},
-      mapped_button_t {LEFT_BUTTON, "LB"sv, "L"sv},
-      mapped_button_t {RIGHT_BUTTON, "RB"sv, "R"sv},
-      mapped_button_t {START, "start"sv, "plus"sv},
-      mapped_button_t {BACK, "select"sv, "minus"sv},
-      mapped_button_t {LEFT_STICK, "lstick"sv, "L3"sv},
-      mapped_button_t {RIGHT_STICK, "rstick"sv, "R3"sv},
-      mapped_button_t {HOME, "home"sv, "home"sv},
-      mapped_button_t {MISC_BUTTON, "capture"sv, "capture"sv},
+      mapped_button_t {A, "A"sv},
+      mapped_button_t {B, "B"sv},
+      mapped_button_t {X, "X"sv},
+      mapped_button_t {Y, "Y"sv},
+      mapped_button_t {LEFT_BUTTON, "LB"sv},
+      mapped_button_t {RIGHT_BUTTON, "RB"sv},
+      mapped_button_t {START, "start"sv},
+      mapped_button_t {BACK, "select"sv},
+      mapped_button_t {LEFT_STICK, "lstick"sv},
+      mapped_button_t {RIGHT_STICK, "rstick"sv},
+      mapped_button_t {HOME, "home"sv},
+      mapped_button_t {MISC_BUTTON, "capture"sv},
     };
 
-    bool esp32_switch_mode_enabled() {
-      std::string mode = config::input.esp32_mode;
-      std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-      });
-      return mode.find("switch"sv) != std::string::npos;
-    }
-
     std::string_view esp32_button_name(const mapped_button_t &button) {
-      return esp32_switch_mode_enabled() ? button.switch_name : button.generic_name;
+      return button.name;
     }
 
     std::string_view esp32_left_trigger_name() {
-      return esp32_switch_mode_enabled() ? "ZL"sv : "LT"sv;
+      return "LT"sv;
     }
 
     std::string_view esp32_right_trigger_name() {
-      return esp32_switch_mode_enabled() ? "ZR"sv : "RT"sv;
+      return "RT"sv;
     }
 
     std::int16_t esp32_quantize_axis(std::int16_t value) {

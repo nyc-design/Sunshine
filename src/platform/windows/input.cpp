@@ -141,43 +141,34 @@ namespace platf {
 
   struct esp32_mapped_button_t {
     std::uint32_t mask;
-    std::string_view generic_name;
-    std::string_view switch_name;
+    std::string_view name;
   };
 
   constexpr std::array ESP32_MAPPED_BUTTONS {
-    esp32_mapped_button_t {A, "A"sv, "B"sv},
-    esp32_mapped_button_t {B, "B"sv, "A"sv},
-    esp32_mapped_button_t {X, "X"sv, "Y"sv},
-    esp32_mapped_button_t {Y, "Y"sv, "X"sv},
-    esp32_mapped_button_t {LEFT_BUTTON, "LB"sv, "L"sv},
-    esp32_mapped_button_t {RIGHT_BUTTON, "RB"sv, "R"sv},
-    esp32_mapped_button_t {START, "start"sv, "plus"sv},
-    esp32_mapped_button_t {BACK, "select"sv, "minus"sv},
-    esp32_mapped_button_t {LEFT_STICK, "lstick"sv, "L3"sv},
-    esp32_mapped_button_t {RIGHT_STICK, "rstick"sv, "R3"sv},
-    esp32_mapped_button_t {HOME, "home"sv, "home"sv},
-    esp32_mapped_button_t {MISC_BUTTON, "capture"sv, "capture"sv},
+    esp32_mapped_button_t {A, "A"sv},
+    esp32_mapped_button_t {B, "B"sv},
+    esp32_mapped_button_t {X, "X"sv},
+    esp32_mapped_button_t {Y, "Y"sv},
+    esp32_mapped_button_t {LEFT_BUTTON, "LB"sv},
+    esp32_mapped_button_t {RIGHT_BUTTON, "RB"sv},
+    esp32_mapped_button_t {START, "start"sv},
+    esp32_mapped_button_t {BACK, "select"sv},
+    esp32_mapped_button_t {LEFT_STICK, "lstick"sv},
+    esp32_mapped_button_t {RIGHT_STICK, "rstick"sv},
+    esp32_mapped_button_t {HOME, "home"sv},
+    esp32_mapped_button_t {MISC_BUTTON, "capture"sv},
   };
 
-  bool esp32_switch_mode_enabled() {
-    std::string mode = config::input.esp32_mode;
-    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-    return mode.find("switch"sv) != std::string::npos;
-  }
-
   std::string_view esp32_button_name(const esp32_mapped_button_t &button) {
-    return esp32_switch_mode_enabled() ? button.switch_name : button.generic_name;
+    return button.name;
   }
 
   std::string_view esp32_left_trigger_name() {
-    return esp32_switch_mode_enabled() ? "ZL"sv : "LT"sv;
+    return "LT"sv;
   }
 
   std::string_view esp32_right_trigger_name() {
-    return esp32_switch_mode_enabled() ? "ZR"sv : "RT"sv;
+    return "RT"sv;
   }
 
   std::int16_t esp32_quantize_axis(std::int16_t value) {

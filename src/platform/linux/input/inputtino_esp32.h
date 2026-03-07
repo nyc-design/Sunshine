@@ -28,7 +28,15 @@ namespace platf::esp32 {
     void send_hat(std::string_view direction);
 
   private:
+    struct pending_stick_t {
+      std::int16_t x {0};
+      std::int16_t y {0};
+      bool dirty {false};
+    };
+
     void enqueue_command(const std::string &line);
+    void enqueue_hat(std::string_view direction);
+    void enqueue_stick(std::string_view stick_id, std::int16_t x, std::int16_t y);
     void writer_loop();
     bool ensure_open();
     void close_port();
@@ -44,6 +52,10 @@ namespace platf::esp32 {
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
     std::deque<std::string> queue_;
+    std::string pending_hat_ {"center"};
+    bool pending_hat_dirty_ {false};
+    pending_stick_t pending_left_;
+    pending_stick_t pending_right_;
   };
 
   std::string dpad_direction(std::uint32_t button_flags);

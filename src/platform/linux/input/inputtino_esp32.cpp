@@ -100,6 +100,24 @@ namespace platf::esp32 {
       return payload.dump() + "\n";
     }
 
+    std::string make_stick_line(std::string_view stick_id, std::int16_t x, std::int16_t y) {
+      nlohmann::json payload {
+        {"action", "stick"},
+        {"stick_id", std::string(stick_id)},
+        {"x", x},
+        {"y", y},
+      };
+      return to_json_line(payload);
+    }
+
+    std::string make_hat_line(std::string_view direction) {
+      nlohmann::json payload {
+        {"action", "hat"},
+        {"direction", std::string(direction)},
+      };
+      return to_json_line(payload);
+    }
+
     std::string normalized_input_policy(std::string policy) {
       std::transform(policy.begin(), policy.end(), policy.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
@@ -200,21 +218,11 @@ namespace platf::esp32 {
   }
 
   void serial_client_t::send_stick(std::string_view stick_id, std::int16_t x, std::int16_t y) {
-    nlohmann::json payload {
-      {"action", "stick"},
-      {"stick_id", std::string(stick_id)},
-      {"x", x},
-      {"y", y},
-    };
-    enqueue_command(to_json_line(payload));
+    enqueue_stick(stick_id, x, y);
   }
 
   void serial_client_t::send_hat(std::string_view direction) {
-    nlohmann::json payload {
-      {"action", "hat"},
-      {"direction", std::string(direction)},
-    };
-    enqueue_command(to_json_line(payload));
+    enqueue_hat(direction);
   }
 
   void serial_client_t::enqueue_command(const std::string &line) {
@@ -236,21 +244,71 @@ namespace platf::esp32 {
     queue_cv_.notify_one();
   }
 
+  void serial_client_t::enqueue_hat(std::string_view direction) {
+    {
+      std::lock_guard lock(queue_mutex_);
+      if (!running_) {
+        return;
+      }
+
+      if (!pending_hat_dirty_ && pending_hat_ == direction) {
+        return;
+      }
+
+      pending_hat_ = std::string(direction);
+      pending_hat_dirty_ = true;
+    }
+
+    queue_cv_.notify_one();
+  }
+
+  void serial_client_t::enqueue_stick(std::string_view stick_id, std::int16_t x, std::int16_t y) {
+    {
+      std::lock_guard lock(queue_mutex_);
+      if (!running_) {
+        return;
+      }
+
+      auto &slot = (stick_id == "right"sv) ? pending_right_ : pending_left_;
+      if (!slot.dirty && slot.x == x && slot.y == y) {
+        return;
+      }
+      slot.x = x;
+      slot.y = y;
+      slot.dirty = true;
+    }
+
+    queue_cv_.notify_one();
+  }
+
   void serial_client_t::writer_loop() {
     while (true) {
       std::string line;
       {
         std::unique_lock lock(queue_mutex_);
         queue_cv_.wait(lock, [this]() {
-          return !running_ || !queue_.empty();
+          return !running_ || !queue_.empty() || pending_hat_dirty_ || pending_left_.dirty || pending_right_.dirty;
         });
 
-        if (!running_ && queue_.empty()) {
+        if (!running_ && queue_.empty() && !pending_hat_dirty_ && !pending_left_.dirty && !pending_right_.dirty) {
           break;
         }
 
-        line = std::move(queue_.front());
-        queue_.pop_front();
+        if (!queue_.empty()) {
+          line = std::move(queue_.front());
+          queue_.pop_front();
+        } else if (pending_hat_dirty_) {
+          line = make_hat_line(pending_hat_);
+          pending_hat_dirty_ = false;
+        } else if (pending_left_.dirty) {
+          line = make_stick_line("left", pending_left_.x, pending_left_.y);
+          pending_left_.dirty = false;
+        } else if (pending_right_.dirty) {
+          line = make_stick_line("right", pending_right_.x, pending_right_.y);
+          pending_right_.dirty = false;
+        } else {
+          continue;
+        }
       }
 
       if (!ensure_open()) {
@@ -326,17 +384,17 @@ namespace platf::esp32 {
     const bool right = button_flags & platf::DPAD_RIGHT;
 
     // Firmware currently supports cardinal directions only.
-    if (up && !down) {
-      return "up"s;
+    if (up && !down && !left && !right) {
+      return "DUP"s;
     }
-    if (down && !up) {
-      return "down"s;
+    if (down && !up && !left && !right) {
+      return "DDOWN"s;
     }
-    if (left && !right) {
-      return "left"s;
+    if (left && !right && !up && !down) {
+      return "DLEFT"s;
     }
-    if (right && !left) {
-      return "right"s;
+    if (right && !left && !up && !down) {
+      return "DRIGHT"s;
     }
 
     return "center"s;
