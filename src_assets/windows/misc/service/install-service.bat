@@ -77,7 +77,7 @@ set /a wait_count+=1
 sc query "%_SVC_NAME%" | findstr /C:"STATE" | findstr /C:"STOPPED" >nul
 if %ERRORLEVEL%==0 exit /b 0
 if %wait_count% GEQ 20 goto force_kill
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 goto wait_loop
 
 :force_kill
