@@ -243,6 +243,12 @@ jobs:
           mv ./cpack_artifacts/Sunshine.msi ../artifacts/Sunshine-${{ matrix.name }}-installer.msi
           mv ./cpack_artifacts/Sunshine.zip ../artifacts/Sunshine-${{ matrix.name }}-portable.zip
 
+      - name: Verify Opus runtime bundled
+        shell: msys2 {0}
+        run: |
+          bsdtar -tf ./artifacts/Sunshine-${{ matrix.name }}-portable.zip | tr -d '\r' \
+            | grep -E '(^|/)libopus-0\.dll$|(^|/)opus\.dll$'
+
       - name: Debug nsis
         if: always()
         shell: msys2 {0}
