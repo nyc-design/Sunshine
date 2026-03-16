@@ -738,6 +738,96 @@ namespace video {
 #endif
 
 #ifdef _WIN32
+  // NVENC via FFmpeg avcodec path (fallback for capture modes like UVC that lack
+  // the D3D11 texture infrastructure required by the custom NVENC encoder above).
+  // Uses av_hwframe_transfer_data() to upload CPU frames to GPU for encoding.
+  encoder_t nvenc_avcodec {
+    "nvenc_avcodec"sv,
+    std::make_unique<encoder_platform_formats_avcodec>(
+      AV_HWDEVICE_TYPE_D3D11VA,
+      AV_HWDEVICE_TYPE_NONE,
+      AV_PIX_FMT_D3D11,
+      AV_PIX_FMT_NV12,
+      AV_PIX_FMT_P010,
+      AV_PIX_FMT_NONE,
+      AV_PIX_FMT_NONE,
+      dxgi_init_avcodec_hardware_input_buffer
+    ),
+    {
+      // Common options
+      {
+        {"delay"s, 0},
+        {"forced-idr"s, 1},
+        {"zerolatency"s, 1},
+        {"surfaces"s, 1},
+        {"cbr_padding"s, false},
+        {"preset"s, &config::video.nv_legacy.preset},
+        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
+        {"rc"s, NV_ENC_PARAMS_RC_CBR},
+        {"multipass"s, &config::video.nv_legacy.multipass},
+        {"aq"s, &config::video.nv_legacy.aq},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "av1_nvenc"s,
+    },
+    {
+      // Common options
+      {
+        {"delay"s, 0},
+        {"forced-idr"s, 1},
+        {"zerolatency"s, 1},
+        {"surfaces"s, 1},
+        {"cbr_padding"s, false},
+        {"preset"s, &config::video.nv_legacy.preset},
+        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
+        {"rc"s, NV_ENC_PARAMS_RC_CBR},
+        {"multipass"s, &config::video.nv_legacy.multipass},
+        {"aq"s, &config::video.nv_legacy.aq},
+      },
+      {
+        // SDR-specific options
+        {"profile"s, (int) nv::profile_hevc_e::main},
+      },
+      {
+        // HDR-specific options
+        {"profile"s, (int) nv::profile_hevc_e::main_10},
+      },
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "hevc_nvenc"s,
+    },
+    {
+      {
+        {"delay"s, 0},
+        {"forced-idr"s, 1},
+        {"zerolatency"s, 1},
+        {"surfaces"s, 1},
+        {"cbr_padding"s, false},
+        {"preset"s, &config::video.nv_legacy.preset},
+        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
+        {"rc"s, NV_ENC_PARAMS_RC_CBR},
+        {"coder"s, &config::video.nv_legacy.h264_coder},
+        {"multipass"s, &config::video.nv_legacy.multipass},
+        {"aq"s, &config::video.nv_legacy.aq},
+      },
+      {
+        // SDR-specific options
+        {"profile"s, (int) nv::profile_h264_e::high},
+      },
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "h264_nvenc"s,
+    },
+    PARALLEL_ENCODING
+  };
+
   encoder_t quicksync {
     "quicksync"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
@@ -1212,6 +1302,7 @@ namespace video {
     &nvenc,
 #endif
 #ifdef _WIN32
+    &nvenc_avcodec,
     &quicksync,
     &amdvce,
     &mediafoundation,
@@ -2853,25 +2944,6 @@ namespace video {
 
     auto encoder_list = encoders;
     std::string requested_encoder = config::video.encoder;
-
-#ifdef _WIN32
-    const bool uvc_capture_mode = config::video.capture == "uvc";
-    if (uvc_capture_mode) {
-      // The Windows custom NVENC path expects desktop duplication capture textures.
-      // UVC capture currently routes through avcodec/software conversion paths.
-      encoder_list.erase(
-        std::remove_if(encoder_list.begin(), encoder_list.end(), [](auto *encoder) {
-          return encoder->name == "nvenc"sv;
-        }),
-        encoder_list.end()
-      );
-
-      if (requested_encoder == "nvenc"sv) {
-        BOOST_LOG(warning) << "Ignoring configured encoder [nvenc] because capture=uvc on Windows currently supports avcodec/software paths only"sv;
-        requested_encoder.clear();
-      }
-    }
-#endif
 
     // If we already have a good encoder, check to see if another probe is required
     if (chosen_encoder && !(chosen_encoder->flags & ALWAYS_REPROBE) && !platf::needs_encoder_reenumeration()) {
