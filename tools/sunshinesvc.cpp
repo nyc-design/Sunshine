@@ -19,6 +19,7 @@ HANDLE stop_event;
 HANDLE session_change_event;
 
 constexpr auto SERVICE_NAME = "SunshineService";
+constexpr auto SERVICE_NAME_W = L"SunshineService";
 
 DWORD WINAPI HandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
   switch (dwControl) {
@@ -119,9 +120,13 @@ HANDLE DuplicateTokenForSession(DWORD console_session_id) {
 HANDLE OpenLogFileHandle() {
   WCHAR log_file_name[MAX_PATH];
 
-  // Create sunshine.log in the Temp folder (usually %SYSTEMROOT%\Temp)
+  // Create a service-specific log in Temp (usually %SYSTEMROOT%\Temp).
+  // This avoids collisions when another compatible service (e.g. ApolloService)
+  // is running on the same machine.
   GetTempPathW(_countof(log_file_name), log_file_name);
-  wcscat_s(log_file_name, L"sunshine.log");
+  std::wstring service_log_name {SERVICE_NAME_W};
+  service_log_name += L".log";
+  wcscat_s(log_file_name, service_log_name.c_str());
 
   // The file handle must be inheritable for our child process to use it
   SECURITY_ATTRIBUTES security_attributes = {sizeof(security_attributes), nullptr, TRUE};

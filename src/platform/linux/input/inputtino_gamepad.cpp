@@ -3,6 +3,7 @@
  * @brief Definitions for inputtino gamepad input handling.
  */
 // lib includes
+#include <algorithm>
 #include <boost/locale.hpp>
 #include <inputtino/input.hpp>
 #include <libevdev/libevdev.h>
@@ -18,6 +19,14 @@
 using namespace std::literals;
 
 namespace platf::gamepad {
+  namespace {
+    void release_all_esp32_buttons(input_raw_t *raw) {
+      if (!raw || !raw->esp32) {
+        return;
+      }
+      raw->esp32->send_neutral_state();
+    }
+  }  // namespace
 
   enum GamepadStatus {
     UHID_NOT_AVAILABLE = 0,  ///< UHID is not available
@@ -54,6 +63,19 @@ namespace platf::gamepad {
   }
 
   int alloc(input_raw_t *raw, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        BOOST_LOG(error) << "ESP32 controller transport selected but serial client is unavailable";
+        return -1;
+      }
+
+      auto state = std::make_shared<joypad_state>(joypad_state {});
+      raw->gamepads[id.globalIndex] = std::move(state);
+      raw->esp32->send_mode_init();
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " routed to ESP32 serial transport";
+      return 0;
+    }
+
     ControllerType selectedGamepadType;
 
     if (config::input.gamepad == "xone"sv) {
@@ -180,6 +202,14 @@ namespace platf::gamepad {
   }
 
   void free(input_raw_t *raw, int nr) {
+    if (config::input.controller_transport == "esp32"sv) {
+      if (raw->gamepads[nr]) {
+        release_all_esp32_buttons(raw);
+      }
+      raw->gamepads[nr].reset();
+      return;
+    }
+
     // This will call the destructor which in turn will stop the background threads for rumble and LED (and ultimately remove the joypad device)
     raw->gamepads[nr]->joypad.reset();
     raw->gamepads[nr].reset();
@@ -188,6 +218,18 @@ namespace platf::gamepad {
   void update(input_raw_t *raw, int nr, const gamepad_state_t &gamepad_state) {
     auto gamepad = raw->gamepads[nr];
     if (!gamepad) {
+      return;
+    }
+
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        return;
+      }
+
+      raw->esp32->send_state(
+        gamepad_state.buttonFlags, gamepad_state.lt, gamepad_state.rt,
+        gamepad_state.lsX, gamepad_state.lsY, gamepad_state.rsX, gamepad_state.rsY
+      );
       return;
     }
 

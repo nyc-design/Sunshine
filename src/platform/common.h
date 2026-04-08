@@ -375,11 +375,26 @@ namespace platf {
     img_t &operator=(img_t &&) = delete;
     img_t &operator=(const img_t &) = delete;
 
+    /// Source pixel format for capture passthrough optimization.
+    enum source_format_e {
+      bgr0 = 0,  ///< Default BGR0 packed (4 bytes/pixel, single plane)
+      nv12 = 1,  ///< NV12 semi-planar (Y plane + interleaved UV plane)
+    };
+
     std::uint8_t *data {};
     std::int32_t width {};
     std::int32_t height {};
     std::int32_t pixel_pitch {};
     std::int32_t row_pitch {};
+
+    /// Source pixel format. Default bgr0; set to nv12 for NV12 passthrough.
+    source_format_e source_format {};
+
+    /// For NV12: byte offset from data to the UV plane.
+    std::int32_t uv_offset {};
+
+    /// For NV12: row pitch of the UV plane.
+    std::int32_t uv_pitch {};
 
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
 

@@ -782,8 +782,26 @@ namespace nvhttp {
     return named_cert_nodes;
   }
 
+  namespace {
+    void refresh_apps_if_idle() {
+      if (proc::proc.running() == 0) {
+        proc::refresh(config::stream.file_apps);
+      }
+    }
+
+    void apply_capture_source_for_app(int app_id, const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session) {
+      for (const auto &app : proc::proc.get_apps()) {
+        if (app.id == std::to_string(app_id) && app.capture_source) {
+          launch_session->capture_source = *app.capture_source;
+          break;
+        }
+      }
+    }
+  }  // namespace
+
   void applist(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
+    refresh_apps_if_idle();
 
     pt::ptree tree;
 
@@ -812,6 +830,7 @@ namespace nvhttp {
 
   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
+    refresh_apps_if_idle();
 
     pt::ptree tree;
     bool revert_display_configuration {false};
@@ -858,6 +877,7 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    apply_capture_source_for_app(static_cast<int>(appid), launch_session);
 
     if (rtsp_stream::session_count() == 0) {
       // The display should be restored in case something fails as there are no other sessions.
@@ -923,6 +943,7 @@ namespace nvhttp {
 
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
+    refresh_apps_if_idle();
 
     pt::ptree tree;
     auto g = util::fail_guard([&]() {
@@ -966,6 +987,7 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    apply_capture_source_for_app(current_appid, launch_session);
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at

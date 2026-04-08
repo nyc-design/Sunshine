@@ -30,7 +30,14 @@ endif()
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
     cmake_policy(SET CMP0167 NEW)  # Get BoostConfig.cmake from upstream
 endif()
-find_package(Boost CONFIG ${BOOST_VERSION} EXACT COMPONENTS ${BOOST_COMPONENTS})
+
+# On Windows CI we install Boost via MSYS2 packages, which may be newer than BOOST_VERSION.
+# Allow newer packaged Boost there to avoid expensive FetchContent builds.
+if(WIN32)
+    find_package(Boost CONFIG COMPONENTS ${BOOST_COMPONENTS})
+else()
+    find_package(Boost CONFIG ${BOOST_VERSION} EXACT COMPONENTS ${BOOST_COMPONENTS})
+endif()
 if(NOT Boost_FOUND)
     message(STATUS "Boost v${BOOST_VERSION} package not found in the system. Falling back to FetchContent.")
     include(FetchContent)

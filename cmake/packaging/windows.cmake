@@ -4,6 +4,27 @@ install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
 install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
 
+# Bundle Opus runtime when linking against MSYS2 import library (libopus.dll.a).
+# Without this, Sunshine fails to launch on fresh Windows hosts with:
+# "libopus-0.dll could not be found".
+if(DEFINED Opus_LIBRARY)
+    get_filename_component(_OPUS_LIBRARY_DIR "${Opus_LIBRARY}" DIRECTORY)
+    get_filename_component(_OPUS_PREFIX_DIR "${_OPUS_LIBRARY_DIR}" DIRECTORY)
+
+    find_file(OPUS_RUNTIME_DLL
+            NAMES libopus-0.dll opus.dll
+            PATHS
+            "${_OPUS_PREFIX_DIR}/bin"
+            "${_OPUS_LIBRARY_DIR}"
+            NO_DEFAULT_PATH)
+
+    if(OPUS_RUNTIME_DLL)
+        install(FILES "${OPUS_RUNTIME_DLL}" DESTINATION "." COMPONENT application)
+    else()
+        message(WARNING "Could not locate Opus runtime DLL for packaging. Opus_LIBRARY='${Opus_LIBRARY}'")
+    endif()
+endif()
+
 # ARM64: include minhook-detours DLL (shared library for ARM64)
 if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64" AND DEFINED _MINHOOK_DLL)
     install(FILES "${_MINHOOK_DLL}" DESTINATION "." COMPONENT application)

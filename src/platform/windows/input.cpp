@@ -8,7 +8,11 @@
 #include <Windows.h>
 
 // standard includes
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -16,6 +20,7 @@
 #include <ViGEm/Client.h>
 
 // local includes
+#include "input_esp32.h"
 #include "keylayout.h"
 #include "misc.h"
 #include "src/config.h"
@@ -84,6 +89,13 @@ namespace platf {
     gamepad_feedback_msg_t last_rgb_led;
   };
 
+  struct esp32_gamepad_state_t {
+    bool active {false};
+    bool has_state {false};
+    gamepad_state_t last_state {};
+    std::string last_hat_direction {"center"};
+  };
+
   constexpr float EARTH_G = 9.80665f;
 
 #define MPS2_TO_DS4_ACCEL(x) (int32_t) (((x) / EARTH_G) * 8192)
@@ -124,6 +136,13 @@ namespace platf {
       .sCurrentTouch = ds4_touch_unused,
       .sPreviousTouch = {ds4_touch_unused, ds4_touch_unused}}}
   };
+
+  // Button mapping, axis quantization, and diff tracking are no longer needed —
+  // the binary PABB protocol sends complete controller state in every packet.
+
+  void release_all_esp32_buttons(esp32::serial_client_t &serial, const esp32_gamepad_state_t & /*state*/) {
+    serial.send_neutral_state();
+  }
 
   /**
    * @brief Updates the DS4 input report with the provided motion data.
@@ -436,6 +455,8 @@ namespace platf {
       delete vigem;
     }
 
+    std::unique_ptr<esp32::serial_client_t> esp32;
+    std::array<esp32_gamepad_state_t, MAX_GAMEPADS> esp32_gamepads;
     vigem_t *vigem;
 
     decltype(CreateSyntheticPointerDevice) *fnCreateSyntheticPointerDevice;
@@ -447,10 +468,20 @@ namespace platf {
     input_t result {new input_raw_t {}};
     auto &raw = *(input_raw_t *) result.get();
 
-    raw.vigem = new vigem_t {};
-    if (raw.vigem->init()) {
-      delete raw.vigem;
+    if (config::input.controller_transport == "esp32"sv) {
       raw.vigem = nullptr;
+      raw.esp32 = std::make_unique<esp32::serial_client_t>(
+        config::input.esp32_serial_port,
+        config::input.esp32_baud,
+        config::input.esp32_mode,
+        config::input.esp32_delivery_policy
+      );
+    } else {
+      raw.vigem = new vigem_t {};
+      if (raw.vigem->init()) {
+        delete raw.vigem;
+        raw.vigem = nullptr;
+      }
     }
 
     // Get pointers to virtual touch/pen input functions (Win10 1809+)
@@ -1166,6 +1197,21 @@ namespace platf {
   int alloc_gamepad(input_t &input, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {
     auto raw = (input_raw_t *) input.get();
 
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        BOOST_LOG(error) << "ESP32 controller transport selected but serial client is unavailable";
+        return -1;
+      }
+
+      auto &state = raw->esp32_gamepads[id.globalIndex];
+      state = esp32_gamepad_state_t {};
+      state.active = true;
+      raw->esp32->send_mode_init();
+
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " routed to ESP32 serial transport";
+      return 0;
+    }
+
     if (!raw->vigem) {
       return 0;
     }
@@ -1219,6 +1265,15 @@ namespace platf {
 
   void free_gamepad(input_t &input, int nr) {
     auto raw = (input_raw_t *) input.get();
+
+    if (config::input.controller_transport == "esp32"sv) {
+      auto &state = raw->esp32_gamepads[nr];
+      if (raw->esp32 && state.active) {
+        release_all_esp32_buttons(*raw->esp32, state);
+      }
+      state = esp32_gamepad_state_t {};
+      return;
+    }
 
     if (!raw->vigem) {
       return;
@@ -1478,7 +1533,29 @@ namespace platf {
    * @param gamepad_state The gamepad button/axis state sent from the client.
    */
   void gamepad_update(input_t &input, int nr, const gamepad_state_t &gamepad_state) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+
+    if (config::input.controller_transport == "esp32"sv) {
+      if (!raw->esp32) {
+        return;
+      }
+
+      auto &state = raw->esp32_gamepads[nr];
+      if (!state.active) {
+        return;
+      }
+
+      // Send complete controller state as a single binary PABB packet.
+      // The binary protocol handles button layout mapping (Nintendo swap)
+      // and axis conversion internally — no diff tracking needed.
+      raw->esp32->send_state(
+        gamepad_state.buttonFlags, gamepad_state.lt, gamepad_state.rt,
+        gamepad_state.lsX, gamepad_state.lsY, gamepad_state.rsX, gamepad_state.rsY
+      );
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1720,15 +1797,15 @@ namespace platf {
     if (!input) {
       static std::vector gps {
         supported_gamepad_t {"auto", true, ""},
-        supported_gamepad_t {"x360", false, ""},
-        supported_gamepad_t {"ds4", false, ""},
+        supported_gamepad_t {"x360", true, ""},
+        supported_gamepad_t {"ds4", true, ""},
       };
 
       return gps;
     }
 
     auto vigem = ((input_raw_t *) input)->vigem;
-    auto enabled = vigem != nullptr;
+    auto enabled = (vigem != nullptr) || (config::input.controller_transport == "esp32"sv);
     auto reason = enabled ? "" : "gamepads.vigem-not-available";
 
     // ds4 == ps4
@@ -1754,8 +1831,9 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
-    // We support controller touchpad input as long as we're not emulating X360
-    if (config::input.gamepad != "x360"sv) {
+    // We support controller touchpad input as long as we're not emulating X360,
+    // and only when controller events are injected on the host.
+    if (config::input.controller_transport == "host"sv && config::input.gamepad != "x360"sv) {
       caps |= platform_caps::controller_touch;
     }
 

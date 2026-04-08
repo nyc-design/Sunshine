@@ -63,6 +63,7 @@ namespace proc {
     std::string output;
     std::string image_path;
     std::string id;
+    std::optional<std::string> capture_source;  ///< Optional per-app capture source override (e.g. UVC device id).
     bool elevated;
     bool auto_detach;
     bool wait_all;

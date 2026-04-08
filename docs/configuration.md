@@ -688,6 +688,163 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### controller_transport
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Choose where controller input is delivered.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            host
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            controller_transport = esp32
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="2">Choices</td>
+        <td>host</td>
+        <td>Inject gamepad input on the host using the platform virtual-controller backend.</td>
+    </tr>
+    <tr>
+        <td>esp32</td>
+        <td>Forward gamepad input to an ESP32 over wired serial (JSON line protocol).
+            @note{Applies to Linux and Windows.}</td>
+    </tr>
+</table>
+
+### esp32_serial_port
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Serial device used for ESP32 controller transport.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            Linux: /dev/ttyACM0
+            Windows: COM3
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_serial_port = COM4
+            @endcode</td>
+    </tr>
+</table>
+
+### esp32_baud
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Baud rate used for ESP32 serial transport.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            115200
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_baud = 115200
+            @endcode</td>
+    </tr>
+</table>
+
+### esp32_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Controller mode sent to ESP32 at stream start when using @code{}controller_transport = esp32@endcode.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            gamepad
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_mode = switch_controller
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="2">Choices</td>
+        <td>gamepad</td>
+        <td>Use the ESP32 generic gamepad mapping.</td>
+    </tr>
+    <tr>
+        <td>switch_controller</td>
+        <td>Use the ESP32 Nintendo Switch Pro Controller mapping.</td>
+    </tr>
+</table>
+
+### esp32_delivery_policy
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Input source policy sent to ESP32 at stream start when using @code{}controller_transport = esp32@endcode.
+            Sunshine sends both @code{}set_delivery_policy@endcode (legacy) and @code{}set_input_policy@endcode (current firmware naming).
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            esp32_delivery_policy = wired
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>auto</td>
+        <td>Use firmware default source-priority behavior.</td>
+    </tr>
+    <tr>
+        <td>wired</td>
+        <td>Accept only wired serial command input.</td>
+    </tr>
+    <tr>
+        <td>bluetooth</td>
+        <td>Legacy alias; translated to @code{}websocket@endcode for current firmware.</td>
+    </tr>
+    <tr>
+        <td>websocket</td>
+        <td>Accept only WebSocket command input.</td>
+    </tr>
+    <tr>
+        <td>http</td>
+        <td>Accept only HTTP command input.</td>
+    </tr>
+</table>
+
 ### keybindings
 
 <table>
@@ -2055,7 +2212,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="6">Choices</td>
+        <td rowspan="8">Choices</td>
         <td>nvfbc</td>
         <td>Use NVIDIA Frame Buffer Capture to capture direct to GPU memory. This is usually the fastest method for
             NVIDIA cards. NvFBC does not have native Wayland support and does not work with XWayland.
@@ -2073,8 +2230,20 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>
+        <td>uvc</td>
+        <td>Capture from a UVC capture card (for example HDMI/USB capture dongles) as the video source.
+            On Windows, audio capture in this mode uses input endpoints (default recording device, or @code{}audio_sink@endcode if set to a capture endpoint id/name).
+            @note{Applies to Linux and Windows.}</td>
+    </tr>
+    <tr>
         <td>x11</td>
         <td>Uses XCB. This is the slowest and most CPU intensive so should be avoided if possible.
+            @note{Applies to FreeBSD and Linux only.}</td>
+    </tr>
+    <tr>
+        <td>portal</td>
+        <td>Capture through XDG Desktop Portal (PipeWire based). This is useful on sandboxed desktops and for
+            compositors without direct capture integrations.
             @note{Applies to FreeBSD and Linux only.}</td>
     </tr>
     <tr>

@@ -38,6 +38,9 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE: DWORD {
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/video.h"
+#ifdef SUNSHINE_BUILD_UVC
+  #include "uvc_capture.h"
+#endif
 
 namespace platf {
   using namespace std::literals;
@@ -1005,6 +1008,12 @@ namespace platf {
    * @param hwdevice_type enables possible use of hardware encoder
    */
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+#ifdef SUNSHINE_BUILD_UVC
+    if (config::video.capture == "uvc") {
+      return uvc_display(hwdevice_type, display_name, config);
+    }
+#endif
+
     if (config::video.capture == "ddx" || config::video.capture.empty()) {
       if (hwdevice_type == mem_type_e::dxgi) {
         auto disp = std::make_shared<dxgi::display_ddup_vram_t>();
@@ -1042,6 +1051,12 @@ namespace platf {
   }
 
   std::vector<std::string> display_names(mem_type_e) {
+#ifdef SUNSHINE_BUILD_UVC
+    if (config::video.capture == "uvc") {
+      return uvc_display_names();
+    }
+#endif
+
     std::vector<std::string> display_names;
 
     HRESULT status;

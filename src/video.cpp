@@ -3,9 +3,11 @@
  * @brief Definitions for video.
  */
 // standard includes
+#include <algorithm>
 #include <atomic>
 #include <bitset>
 #include <list>
+#include <string>
 #include <thread>
 
 // lib includes
@@ -31,6 +33,7 @@ extern "C" {
 #include "video.h"
 
 #ifdef _WIN32
+#include <d3d11.h>
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -126,6 +129,12 @@ namespace video {
   class avcodec_software_encode_device_t: public platf::avcodec_encode_device_t {
   public:
     int convert(platf::img_t &img) override {
+      // NV12 passthrough fast path: when capture delivers NV12 and encoder wants NV12,
+      // skip sws_scale entirely and copy planes directly.
+      if (img.source_format == platf::img_t::nv12) {
+        return convert_nv12_passthrough(img);
+      }
+
       // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer
       bool requires_padding = (sw_frame->width != sws_output_frame->width || sw_frame->height != sws_output_frame->height);
 
@@ -274,6 +283,118 @@ namespace video {
       return 0;
     }
 
+    /**
+     * NV12 passthrough: when the capture source delivers NV12 and the target
+     * format is also NV12 at matching dimensions, copy planes directly —
+     * eliminating two sws_scale calls (NV12→BGR0 in capture, BGR0→NV12 in encode).
+     * When the target is not NV12 or dimensions differ, use a dedicated NV12→target
+     * sws context initialized lazily on first use.
+     */
+    int convert_nv12_passthrough(platf::img_t &img) {
+      auto *target = sw_frame ? sw_frame.get() : frame;
+      const auto target_fmt = static_cast<AVPixelFormat>(target->format);
+      const bool same_size = (img.width == target->width && img.height == target->height);
+
+      // Fast path: NV12 source, NV12 target, same dimensions — direct plane copy.
+      if (same_size && (target_fmt == AV_PIX_FMT_NV12)) {
+        // Y plane
+        const auto y_line_bytes = static_cast<std::size_t>(img.width);
+        for (int y = 0; y < img.height; ++y) {
+          std::memcpy(
+            target->data[0] + static_cast<std::size_t>(y) * target->linesize[0],
+            img.data + static_cast<std::size_t>(y) * img.row_pitch,
+            y_line_bytes
+          );
+        }
+
+        // UV plane
+        const auto uv_height = (img.height + 1) / 2;
+        auto *uv_src = img.data + img.uv_offset;
+        for (int y = 0; y < uv_height; ++y) {
+          std::memcpy(
+            target->data[1] + static_cast<std::size_t>(y) * target->linesize[1],
+            uv_src + static_cast<std::size_t>(y) * img.uv_pitch,
+            y_line_bytes
+          );
+        }
+
+        // Upload to GPU if needed
+        if (frame->hw_frames_ctx) {
+          auto status = av_hwframe_transfer_data(frame, sw_frame.get(), 0);
+          if (status < 0) {
+            char string[AV_ERROR_MAX_STRING_SIZE];
+            BOOST_LOG(error) << "Failed to transfer NV12 frame to hardware: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+            return -1;
+          }
+        }
+
+        return 0;
+      }
+
+      // Slow path: NV12 source but target is not NV12 or dimensions differ.
+      // Use a lazily-initialized NV12→target sws context.
+      if (!nv12_sws) {
+        nv12_sws.reset(sws_alloc_context());
+        if (!nv12_sws) {
+          return -1;
+        }
+
+        AVDictionary *options {nullptr};
+        av_dict_set_int(&options, "srcw", img.width, 0);
+        av_dict_set_int(&options, "srch", img.height, 0);
+        av_dict_set_int(&options, "src_format", AV_PIX_FMT_NV12, 0);
+        av_dict_set_int(&options, "dstw", target->width, 0);
+        av_dict_set_int(&options, "dsth", target->height, 0);
+        av_dict_set_int(&options, "dst_format", target->format, 0);
+        av_dict_set_int(&options, "sws_flags", SWS_LANCZOS | SWS_ACCURATE_RND, 0);
+        av_dict_set_int(&options, "threads", config::video.min_threads, 0);
+
+        auto status = av_opt_set_dict(nv12_sws.get(), &options);
+        av_dict_free(&options);
+        if (status < 0) {
+          nv12_sws.reset();
+          return -1;
+        }
+
+        status = sws_init_context(nv12_sws.get(), nullptr, nullptr);
+        if (status < 0) {
+          nv12_sws.reset();
+          return -1;
+        }
+
+        nv12_input_frame.reset(av_frame_alloc());
+        nv12_input_frame->width = img.width;
+        nv12_input_frame->height = img.height;
+        nv12_input_frame->format = AV_PIX_FMT_NV12;
+
+        BOOST_LOG(info) << "UVC NV12 passthrough: initialized NV12→" << av_get_pix_fmt_name(target_fmt) << " conversion";
+      }
+
+      // Set up NV12 input planes
+      nv12_input_frame->data[0] = img.data;
+      nv12_input_frame->linesize[0] = img.row_pitch;
+      nv12_input_frame->data[1] = img.data + img.uv_offset;
+      nv12_input_frame->linesize[1] = img.uv_pitch;
+
+      auto status = sws_scale_frame(nv12_sws.get(), target, nv12_input_frame.get());
+      if (status < 0) {
+        char string[AV_ERROR_MAX_STRING_SIZE];
+        BOOST_LOG(error) << "Couldn't scale NV12 frame: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+        return -1;
+      }
+
+      if (frame->hw_frames_ctx) {
+        status = av_hwframe_transfer_data(frame, sw_frame.get(), 0);
+        if (status < 0) {
+          char string[AV_ERROR_MAX_STRING_SIZE];
+          BOOST_LOG(error) << "Failed to transfer NV12-converted frame to hardware: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+          return -1;
+        }
+      }
+
+      return 0;
+    }
+
     // Store ownership when frame is hw_frame
     avcodec_frame_t hw_frame;
 
@@ -281,6 +402,10 @@ namespace video {
     avcodec_frame_t sws_input_frame;
     avcodec_frame_t sws_output_frame;
     sws_t sws;
+
+    // NV12 passthrough: lazily-initialized context for NV12→target conversion
+    sws_t nv12_sws;
+    avcodec_frame_t nv12_input_frame;
 
     // Offset of input image to output frame in pixels
     int offsetW;
@@ -613,6 +738,96 @@ namespace video {
 #endif
 
 #ifdef _WIN32
+  // NVENC via FFmpeg avcodec path (fallback for capture modes like UVC that lack
+  // the D3D11 texture infrastructure required by the custom NVENC encoder above).
+  // Uses av_hwframe_transfer_data() to upload CPU frames to GPU for encoding.
+  encoder_t nvenc_avcodec {
+    "nvenc_avcodec"sv,
+    std::make_unique<encoder_platform_formats_avcodec>(
+      AV_HWDEVICE_TYPE_D3D11VA,
+      AV_HWDEVICE_TYPE_NONE,
+      AV_PIX_FMT_D3D11,
+      AV_PIX_FMT_NV12,
+      AV_PIX_FMT_P010,
+      AV_PIX_FMT_NONE,
+      AV_PIX_FMT_NONE,
+      dxgi_init_avcodec_hardware_input_buffer
+    ),
+    {
+      // Common options
+      {
+        {"delay"s, 0},
+        {"forced-idr"s, 1},
+        {"zerolatency"s, 1},
+        {"surfaces"s, 1},
+        {"cbr_padding"s, false},
+        {"preset"s, &config::video.nv_legacy.preset},
+        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
+        {"rc"s, NV_ENC_PARAMS_RC_CBR},
+        {"multipass"s, &config::video.nv_legacy.multipass},
+        {"aq"s, &config::video.nv_legacy.aq},
+      },
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "av1_nvenc"s,
+    },
+    {
+      // Common options
+      {
+        {"delay"s, 0},
+        {"forced-idr"s, 1},
+        {"zerolatency"s, 1},
+        {"surfaces"s, 1},
+        {"cbr_padding"s, false},
+        {"preset"s, &config::video.nv_legacy.preset},
+        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
+        {"rc"s, NV_ENC_PARAMS_RC_CBR},
+        {"multipass"s, &config::video.nv_legacy.multipass},
+        {"aq"s, &config::video.nv_legacy.aq},
+      },
+      {
+        // SDR-specific options
+        {"profile"s, (int) nv::profile_hevc_e::main},
+      },
+      {
+        // HDR-specific options
+        {"profile"s, (int) nv::profile_hevc_e::main_10},
+      },
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "hevc_nvenc"s,
+    },
+    {
+      {
+        {"delay"s, 0},
+        {"forced-idr"s, 1},
+        {"zerolatency"s, 1},
+        {"surfaces"s, 1},
+        {"cbr_padding"s, false},
+        {"preset"s, &config::video.nv_legacy.preset},
+        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
+        {"rc"s, NV_ENC_PARAMS_RC_CBR},
+        {"coder"s, &config::video.nv_legacy.h264_coder},
+        {"multipass"s, &config::video.nv_legacy.multipass},
+        {"aq"s, &config::video.nv_legacy.aq},
+      },
+      {
+        // SDR-specific options
+        {"profile"s, (int) nv::profile_h264_e::high},
+      },
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "h264_nvenc"s,
+    },
+    PARALLEL_ENCODING
+  };
+
   encoder_t quicksync {
     "quicksync"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
@@ -1087,6 +1302,7 @@ namespace video {
     &nvenc,
 #endif
 #ifdef _WIN32
+    &nvenc_avcodec,
     &quicksync,
     &amdvce,
     &mediafoundation,
@@ -1124,12 +1340,15 @@ namespace video {
    * @brief Update the list of display names before or during a stream.
    * @details This will attempt to keep `current_display_index` pointing at the same display.
    * @param dev_type The encoder device type used for display lookup.
+   * @param preferred_display_name Preferred capture source name for this session, if any.
    * @param display_names The list of display names to repopulate.
    * @param current_display_index The current display index or -1 if not yet known.
    */
-  void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
-    // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+  void refresh_displays(platf::mem_type_e dev_type, const std::string &preferred_display_name, std::vector<std::string> &display_names, int &current_display_index) {
+    // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa.
+    const auto output_name = preferred_display_name.empty() ?
+                               display_device::map_output_name(config::video.output_name) :
+                               preferred_display_name;
     std::string current_display_name;
 
     // If we have a current display index, let's start with that
@@ -1207,7 +1426,7 @@ namespace video {
     // get the most up-to-date list available monitors
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+    refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config.capture_source, display_names, display_p);
     auto disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
     if (!disp) {
       return;
@@ -1397,7 +1616,7 @@ namespace video {
               disp.reset();
 
               // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+              refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config.capture_source, display_names, display_p);
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -2209,7 +2428,7 @@ namespace video {
 
     while (encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+      refresh_displays(encoder.platform_formats->dev_type, synced_session_ctxs.front()->config.capture_source, display_names, display_p);
 
       // Process any pending display switch with the new list of displays
       if (switch_display_event->peek()) {
@@ -2724,6 +2943,7 @@ namespace video {
     }
 
     auto encoder_list = encoders;
+    std::string requested_encoder = config::video.encoder;
 
     // If we already have a good encoder, check to see if another probe is required
     if (chosen_encoder && !(chosen_encoder->flags & ALWAYS_REPROBE) && !platf::needs_encoder_reenumeration()) {
@@ -2756,12 +2976,12 @@ namespace video {
       }
     };
 
-    if (!config::video.encoder.empty()) {
+    if (!requested_encoder.empty()) {
       // If there is a specific encoder specified, use it if it passes validation
       KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
         auto encoder = *pos;
 
-        if (encoder->name == config::video.encoder) {
+        if (encoder->name == requested_encoder) {
           // Remove the encoder from the list entirely if it fails validation
           if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
             pos = encoder_list.erase(pos);
@@ -2779,7 +2999,7 @@ namespace video {
       });
 
       if (chosen_encoder == nullptr) {
-        BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
+        BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << requested_encoder << ']';
       }
     }
 
@@ -2974,8 +3194,40 @@ namespace video {
     std::fill_n((std::uint8_t *) ctx, sizeof(AVD3D11VADeviceContext), 0);
 
     auto device = (ID3D11Device *) encode_device->data;
+    bool created_device = false;
+    if (!device) {
+      D3D_FEATURE_LEVEL feature_level {};
+      const D3D_FEATURE_LEVEL feature_levels[] {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+      };
 
-    device->AddRef();
+      const auto status = D3D11CreateDevice(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        0,
+        feature_levels,
+        ARRAYSIZE(feature_levels),
+        D3D11_SDK_VERSION,
+        &device,
+        &feature_level,
+        nullptr
+      );
+
+      if (FAILED(status) || !device) {
+        BOOST_LOG(error) << "Failed to create D3D11 device for hardware encoding input [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      created_device = true;
+    }
+
+    if (!created_device) {
+      device->AddRef();
+    }
     ctx->device = device;
 
     ctx->lock_ctx = (void *) 1;
